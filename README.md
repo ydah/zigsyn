@@ -89,7 +89,6 @@ let expression = parser.expression().expect("valid Zig expression");
 - [`tests/`](tests/): integration and fixture-based tests.
 - [`benches/`](benches/): Criterion benchmarks.
 - [`fuzz/`](fuzz/): cargo-fuzz target.
-- [`CHANGELOG.md`](CHANGELOG.md): release notes.
 
 ## Development
 

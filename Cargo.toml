@@ -11,7 +11,6 @@ keywords = ["zig", "parser", "scanner", "syntax", "ast"]
 categories = ["parser-implementations", "parsing", "compilers"]
 include = [
     "/benches/**",
-    "/CHANGELOG.md",
     "/LICENSE",
     "/README.md",
     "/spec/**",
