@@ -1,0 +1,9 @@
+/target/
+/fuzz/Cargo.lock
+/fuzz/artifacts/
+/fuzz/corpus/
+/fuzz/target/
+/zig-cache/
+/zig-out/
+/.serena/
+/.DS_Store

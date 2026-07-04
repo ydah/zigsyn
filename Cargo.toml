@@ -1,0 +1,44 @@
+[package]
+name = "zigsyn"
+version = "0.1.0"
+edition = "2021"
+description = "A pure Rust Zig syntax scanner and parser."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/ydah/zigsyn"
+documentation = "https://docs.rs/zigsyn"
+keywords = ["zig", "parser", "scanner", "syntax", "ast"]
+categories = ["parser-implementations", "parsing", "compilers"]
+include = [
+    "/benches/**",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/README.md",
+    "/spec/**",
+    "/src/**",
+    "/tests/**",
+]
+
+[dependencies]
+anyhow = "1.0"
+thiserror = "2"
+strum = { version = "0.27", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"], optional = true }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[[bench]]
+name = "scanner"
+harness = false
+
+[[bench]]
+name = "parser"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
