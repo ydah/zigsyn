@@ -423,7 +423,6 @@ impl Parser {
                     threadlocal: false,
                     keyword: first_keyword,
                     lhs: var_lhs,
-                    ty: None,
                     align: None,
                     addrspace: None,
                     linksection: None,
@@ -481,7 +480,7 @@ impl Parser {
             pos: first.name.pos,
             keyword: first.keyword,
             name: first.name.clone(),
-            ty: first.ty.clone(),
+            ty: first.ty,
         }];
         let mut destructuring = false;
         while self.consume_symbol(Symbol::Comma) {
@@ -520,7 +519,6 @@ impl Parser {
             threadlocal: false,
             keyword: first.keyword,
             lhs,
-            ty: first.ty,
             align: first.align,
             addrspace: first.addrspace,
             linksection: first.linksection,
@@ -854,7 +852,7 @@ impl Parser {
             pos,
             keyword,
             name,
-            ty: ty.clone(),
+            ty,
         }];
         Ok(ast::VarDecl {
             pos,
@@ -864,7 +862,6 @@ impl Parser {
             threadlocal,
             keyword,
             lhs,
-            ty,
             align,
             addrspace,
             linksection,
@@ -1574,16 +1571,8 @@ impl Parser {
                 self.cursor += 1;
                 if self.current_is_symbol(Symbol::LBrace) {
                     let entries = self.parse_init_list()?;
-                    let fields = entries
-                        .iter()
-                        .map(|entry| match entry {
-                            ast::InitEntry::Expr(expr) => expr.clone(),
-                            ast::InitEntry::Field { value, .. } => value.clone(),
-                        })
-                        .collect();
                     return Ok(ast::Expression::AnonInit(ast::AnonInit {
                         pos: current.pos,
-                        fields,
                         entries,
                     }));
                 }
@@ -2867,5 +2856,79 @@ pub fn f() void {
         assert_eq!(asm_expr.outputs.len(), 1);
         assert_eq!(asm_expr.inputs.len(), 1);
         assert!(asm_expr.clobbers.is_some());
+    }
+
+    /// Size of the AST built for `source`, measured by its debug output.
+    fn ast_size(source: &str) -> usize {
+        format!("{:?}", parse_source(source).unwrap().members).len()
+    }
+
+    #[test]
+    fn nested_anonymous_initializers_do_not_grow_exponentially() {
+        // Each level used to store its entries twice, doubling the AST per
+        // level.
+        let nested =
+            |depth: usize| format!("const x = {}1{};", ".{".repeat(depth), "}".repeat(depth));
+        assert!(ast_size(&nested(16)) < 3 * ast_size(&nested(8)));
+    }
+
+    #[test]
+    fn nested_declaration_types_do_not_grow_exponentially() {
+        // Each declaration used to store its type twice, doubling the AST
+        // per level of declarations nested inside types. (Each declaration's
+        // `tokens` still copies the tokens nested in it, so the size grows
+        // quadratically: about 4x when the depth doubles, against 64x before.)
+        let nested = |depth: usize| {
+            format!(
+                "fn f() void {{{}break :blk 1;{}}}",
+                "var x: struct { a: u8 = blk: {".repeat(depth),
+                "}} = .{};".repeat(depth)
+            )
+        };
+        assert!(ast_size(&nested(12)) < 8 * ast_size(&nested(6)));
+    }
+
+    #[test]
+    fn anon_init_fields_are_the_entry_values() {
+        let mut parser = Parser::from(".{ .a = x, y }");
+        let ast::Expression::AnonInit(init) = parser.expression().unwrap() else {
+            panic!("expected anonymous initializer");
+        };
+        let names: Vec<_> = init
+            .fields()
+            .map(|field| match field {
+                ast::Expression::Ident(ident) => ident.name.as_str(),
+                other => panic!("unexpected field {other:?}"),
+            })
+            .collect();
+        assert_eq!(names, ["x", "y"]);
+    }
+
+    #[test]
+    fn var_decl_ty_is_the_first_prototype_type() {
+        let file = parse_source(
+            "const a: u8 = 1;\nconst b = 2;\nfn f() void { var c: u16, var d: u32 = g(); }",
+        )
+        .unwrap();
+        let ty_name = |var: &ast::VarDecl| match var.ty() {
+            Some(ast::Expression::Ident(ident)) => Some(ident.name.clone()),
+            None => None,
+            Some(other) => panic!("unexpected type {other:?}"),
+        };
+        let ast::ContainerMember::Var(a) = &file.members[0] else {
+            panic!("expected var");
+        };
+        let ast::ContainerMember::Var(b) = &file.members[1] else {
+            panic!("expected var");
+        };
+        assert_eq!(ty_name(a).as_deref(), Some("u8"));
+        assert_eq!(ty_name(b), None);
+        let ast::ContainerMember::Fn(f) = &file.members[2] else {
+            panic!("expected fn");
+        };
+        let ast::Statement::Var(c) = &f.body.as_ref().unwrap().statements[0] else {
+            panic!("expected var statement");
+        };
+        assert_eq!(ty_name(c).as_deref(), Some("u16"));
     }
 }
