@@ -437,21 +437,8 @@ impl Scanner {
             }
 
             let skip_start = self.pos;
-            loop {
-                while matches!(self.peek(), Some(' ' | '\n' | '\t' | '\r')) {
-                    self.advance();
-                }
-                if self.starts_with("////")
-                    || (self.starts_with("//")
-                        && !self.starts_with("//!")
-                        && !self.starts_with("///"))
-                {
-                    while !self.is_eof() && self.peek() != Some('\n') {
-                        self.advance();
-                    }
-                    continue;
-                }
-                break;
+            while matches!(self.peek(), Some(' ' | '\n' | '\t' | '\r')) {
+                self.advance();
             }
 
             if self.starts_with("\\\\") {
@@ -649,10 +636,14 @@ mod tests {
 
         let tokens = scan_tokens("\\\\first\n// comment between lines\n\\\\second\nnext");
         assert_eq!(
-            tokens[0].kind(),
-            TokenKind::Literal(LitKind::MultilineString)
+            tokens,
+            [
+                Token::Literal(LitKind::MultilineString, "\\\\first".to_owned()),
+                Token::Comment(CommentKind::Line, "// comment between lines".to_owned()),
+                Token::Literal(LitKind::MultilineString, "\\\\second".to_owned()),
+                Token::Literal(LitKind::Ident, "next".to_owned()),
+            ]
         );
-        assert_eq!(tokens[1], Token::Literal(LitKind::Ident, "next".to_owned()));
 
         assert!(Scanner::from("\"a\n b\"").next_token().is_err());
         assert!(Scanner::from("\"\\q\"").next_token().is_err());
