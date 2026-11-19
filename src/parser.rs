@@ -899,7 +899,7 @@ impl Parser {
         let ty = Some(self.parse_type_expr()?);
         let align = self.parse_expr_attr(Keyword::Align)?;
         let default = if self.consume_symbol(Symbol::Equal) {
-            Some(self.parse_expr_bp(0)?)
+            Some(self.parse_value_expr()?)
         } else {
             None
         };
@@ -1459,10 +1459,10 @@ impl Parser {
                 self.expect_symbol(Symbol::Dot)?;
                 let name = self.expect_ident(self.current_pos())?;
                 self.expect_symbol(Symbol::Equal)?;
-                let value = self.parse_expr_bp(0)?;
+                let value = self.parse_value_expr()?;
                 entries.push(ast::InitEntry::Field { name, value });
             } else {
-                entries.push(ast::InitEntry::Expr(self.parse_expr_bp(0)?));
+                entries.push(ast::InitEntry::Expr(self.parse_value_expr()?));
             }
             if !self.consume_symbol(Symbol::Comma) {
                 break;
@@ -2191,7 +2191,7 @@ impl Parser {
             if self.is_eof() {
                 return Err(self.unexpected(vec![TokenKind::Symbol(close)], None));
             }
-            args.push(self.parse_expr_bp(0)?);
+            args.push(self.parse_value_expr()?);
             if self.current_is_symbol(Symbol::Comma) {
                 self.advance();
                 if self.current_is_symbol(close) {
@@ -2869,6 +2869,26 @@ pub fn add(a: u32, comptime b: anytype) u32 {
             };
             assert!(matches!(child, ast::Expression::Ident(ident) if ident.name == "u8"));
         }
+    }
+
+    #[test]
+    fn parses_initializer_arguments_inside_a_return_type() {
+        parse_source("fn f() std.meta.Tuple(&[_]type{ u8, u8 }) {}").unwrap();
+    }
+
+    #[test]
+    fn parses_typed_initializer_in_a_container_field_default() {
+        let file = parse_source("var o: struct { c: Cfg = Cfg{} } = .{};").unwrap();
+        let ast::ContainerMember::Var(var) = &file.members[0] else {
+            panic!("expected variable declaration");
+        };
+        let Some(ast::Expression::Container(container)) = var.ty() else {
+            panic!("expected container type");
+        };
+        let [ast::ContainerMember::Field(field)] = container.members.as_slice() else {
+            panic!("expected one container field");
+        };
+        assert!(matches!(field.default, Some(ast::Expression::InitList(_))));
     }
 
     #[test]
