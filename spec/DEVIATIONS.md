@@ -1,3 +1,4 @@
 # Deviations
 
-No deviations from `spec/grammar.peg` are currently accepted.
+- A UTF-8 BOM at byte zero is skipped to match Zig. Source offsets still
+  include its bytes.

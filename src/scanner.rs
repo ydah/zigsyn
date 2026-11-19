@@ -52,6 +52,7 @@ impl Scanner {
     }
 
     fn new(source: String, path: PathBuf, options: ScanOptions) -> Self {
+        let pos = usize::from(source.starts_with('\u{feff}'));
         let chars: Vec<char> = source.chars().collect();
         let mut byte_offsets: Vec<usize> = source.char_indices().map(|(idx, _)| idx).collect();
         byte_offsets.push(source.len());
@@ -67,7 +68,7 @@ impl Scanner {
             source,
             chars,
             byte_offsets,
-            pos: 0,
+            pos,
             path,
             line_info,
             options,
@@ -562,6 +563,21 @@ mod tests {
             },
         );
         assert!(strict.next_token().is_err());
+    }
+
+    #[test]
+    fn scan_skips_a_bom_only_at_the_start() {
+        let source = "\u{feff}const";
+        let mut scanner = Scanner::from(source);
+        assert_eq!(scanner.source(), source);
+        assert_eq!(
+            scanner.next_token().unwrap(),
+            Some(SpannedToken {
+                pos: 3,
+                token: Token::Keyword(Keyword::Const),
+            })
+        );
+        assert!(Scanner::from(" \u{feff}const").next_token().is_err());
     }
 
     #[test]
