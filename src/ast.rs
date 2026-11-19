@@ -586,6 +586,8 @@ pub struct ContainerDecl {
     pub arg: Option<ContainerArg>,
     pub members: Vec<ContainerMember>,
     pub tokens: Vec<Token>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub container_docs: Vec<Rc<Comment>>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
