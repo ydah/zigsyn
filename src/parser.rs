@@ -7,6 +7,8 @@ use crate::scanner::{Scanner, SpannedToken};
 use crate::token::{CommentKind, Keyword, LitKind, Symbol, Token, TokenKind};
 
 const MAX_DEPTH: usize = 64;
+// A separate budget limits recursive AST nodes and token copies from iterative else-if chains.
+const MAX_ELSE_IF_DEPTH: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParserMark {
@@ -27,6 +29,7 @@ pub struct Parser {
     depth: usize,
     suppress_curly_suffix: usize,
     scan_error: Option<Error>,
+    else_if_depth: usize,
 }
 
 #[derive(Debug)]
@@ -92,6 +95,7 @@ impl Parser {
             depth: 0,
             suppress_curly_suffix: 0,
             scan_error,
+            else_if_depth: 0,
         }
     }
 
@@ -1882,27 +1886,53 @@ impl Parser {
 
     /// IfExpr <- IfPrefix Expr (KEYWORD_else Payload? Expr)?
     fn parse_if_expr(&mut self) -> Result<ast::Expression, Error> {
-        let mark = self.preback();
-        let pos = self.current_pos();
-        let (condition, payload) = self.parse_if_prefix()?;
-        let then_branch = self.parse_expr_bp(0)?;
-        self.skip_comments();
-        let (else_payload, else_branch) = if self.consume_keyword(Keyword::Else) {
-            let payload = self.parse_optional_payload(PayloadSyntax::Plain)?;
-            (payload, Some(Box::new(self.parse_expr_bp(0)?)))
-        } else {
-            (None, None)
+        let saved_depth = self.else_if_depth;
+        let result = self.parse_if_chain();
+        self.else_if_depth = saved_depth;
+        result
+    }
+
+    fn parse_if_chain(&mut self) -> Result<ast::Expression, Error> {
+        let mut pending = Vec::new();
+        let mut expression = loop {
+            let mark = self.preback();
+            let pos = self.current_pos();
+            let (condition, payload) = self.parse_if_prefix()?;
+            let then_branch = self.parse_expr_bp(0)?;
+            self.skip_comments();
+            let mut clause = ast::IfExpr {
+                pos,
+                condition: Some(Box::new(condition)),
+                payload,
+                then_branch: Some(Box::new(then_branch)),
+                else_payload: None,
+                else_branch: None,
+                tokens: Vec::new(),
+            };
+            if self.consume_keyword(Keyword::Else) {
+                clause.else_payload = self.parse_optional_payload(PayloadSyntax::Plain)?;
+                if self.current_is_keyword(Keyword::If) {
+                    if self.else_if_depth >= MAX_ELSE_IF_DEPTH {
+                        return Err(
+                            self.error_at(self.current_pos(), "else-if chain depth exceeded")
+                        );
+                    }
+                    self.else_if_depth += 1;
+                    self.skip_comments();
+                    pending.push((mark, clause));
+                    continue;
+                }
+                clause.else_branch = Some(Box::new(self.parse_expr_bp(0)?));
+            }
+            clause.tokens = self.tokens_since(mark);
+            break ast::Expression::If(clause);
         };
-        let tokens = self.tokens_since(mark);
-        Ok(ast::Expression::If(ast::IfExpr {
-            pos,
-            condition: Some(Box::new(condition)),
-            payload,
-            then_branch: Some(Box::new(then_branch)),
-            else_payload,
-            else_branch,
-            tokens,
-        }))
+        for (mark, mut clause) in pending.into_iter().rev() {
+            clause.tokens = self.tokens_since(mark);
+            clause.else_branch = Some(Box::new(expression));
+            expression = ast::Expression::If(clause);
+        }
+        Ok(expression)
     }
 
     /// WhilePrefix <- KEYWORD_while LPAREN Expr RPAREN PtrPayload? WhileContinueExpr?
@@ -2306,24 +2336,9 @@ impl Parser {
         let mut stack: Vec<(Symbol, usize)> = Vec::new();
         for token in &self.tokens {
             match token.token {
-                Token::Symbol(Symbol::LParen) => {
-                    stack.push((Symbol::RParen, token.pos));
-                    if stack.len() > MAX_DEPTH {
-                        return Err(self.error_at(token.pos, "parser recursion depth exceeded"));
-                    }
-                }
-                Token::Symbol(Symbol::LBracket) => {
-                    stack.push((Symbol::RBracket, token.pos));
-                    if stack.len() > MAX_DEPTH {
-                        return Err(self.error_at(token.pos, "parser recursion depth exceeded"));
-                    }
-                }
-                Token::Symbol(Symbol::LBrace) => {
-                    stack.push((Symbol::RBrace, token.pos));
-                    if stack.len() > MAX_DEPTH {
-                        return Err(self.error_at(token.pos, "parser recursion depth exceeded"));
-                    }
-                }
+                Token::Symbol(Symbol::LParen) => stack.push((Symbol::RParen, token.pos)),
+                Token::Symbol(Symbol::LBracket) => stack.push((Symbol::RBracket, token.pos)),
+                Token::Symbol(Symbol::LBrace) => stack.push((Symbol::RBrace, token.pos)),
                 Token::Symbol(Symbol::RParen | Symbol::RBracket | Symbol::RBrace) => {
                     let actual = match token.token {
                         Token::Symbol(symbol) => symbol,
@@ -2958,9 +2973,84 @@ extern "c" var b: c_int;"#;
 
     #[test]
     fn expression_depth_guard_returns_error() {
-        let source = "(".repeat(1100) + "x" + &")".repeat(1100);
-        let mut parser = Parser::from(source);
-        assert!(parser.expression().is_err());
+        let mut parser = Parser::from("((x))");
+        parser.depth = MAX_DEPTH - 2;
+        assert!(matches!(
+            parser.expression(),
+            Err(Error::Syntax { reason, .. }) if reason == "parser recursion depth exceeded"
+        ));
+    }
+
+    #[test]
+    fn delimiter_validation_does_not_spend_recursion_budget() {
+        let source = "(".repeat(MAX_DEPTH + 1) + "x" + &")".repeat(MAX_DEPTH + 1);
+        assert!(Parser::from(source).validate_balanced_delimiters().is_ok());
+    }
+
+    #[test]
+    fn else_if_chain_does_not_spend_recursion_budget() {
+        let mut parser = Parser::from("if (a) x else if (b) y else z");
+        parser.depth = MAX_DEPTH - 2;
+        assert!(parser.expression().is_ok());
+    }
+
+    #[test]
+    fn else_if_chain_builds_the_ast_from_the_last_clause() {
+        let source = "if (a) b else ".repeat(MAX_DEPTH + 1) + "c";
+        let expression = Parser::from(source).expression().unwrap();
+        let mut clause = &expression;
+        for _ in 0..=MAX_DEPTH {
+            let ast::Expression::If(node) = clause else {
+                panic!("expected if clause");
+            };
+            clause = node.else_branch.as_deref().unwrap();
+        }
+        assert!(matches!(clause, ast::Expression::Ident(ident) if ident.name == "c"));
+    }
+
+    #[test]
+    fn else_if_chain_preserves_payloads_comments_and_binding() {
+        let mut parser = Parser::from(
+            "(if (a) |*x| x else |err| // before nested if\n\
+             if (b) |y| y * 2 else recover(err) + 3) - 4",
+        );
+        let ast::Expression::Binary(outer_op) = parser.expression().unwrap() else {
+            panic!("expected subtraction outside the grouped expression");
+        };
+        assert_eq!(outer_op.op, Token::Symbol(Symbol::Minus));
+        let ast::Expression::Grouped(grouped) = *outer_op.lhs else {
+            panic!("expected grouped if chain");
+        };
+        let ast::Expression::If(outer) = *grouped else {
+            panic!("expected outer if");
+        };
+        assert_eq!(outer.payload.unwrap().names[0].name, "x");
+        assert_eq!(outer.else_payload.unwrap().names[0].name, "err");
+        assert_eq!(parser.comments.len(), 1);
+        let comment = Token::Comment(CommentKind::Line, parser.comments[0].text.clone());
+        assert!(outer.tokens.contains(&comment));
+
+        let ast::Expression::If(inner) = *outer.else_branch.unwrap() else {
+            panic!("expected if in the else branch");
+        };
+        assert!(!inner.tokens.contains(&comment));
+        assert_eq!(inner.payload.unwrap().names[0].name, "y");
+        let ast::Expression::Binary(else_op) = *inner.else_branch.unwrap() else {
+            panic!("expected addition inside the last else branch");
+        };
+        assert_eq!(else_op.op, Token::Symbol(Symbol::Plus));
+    }
+
+    #[test]
+    fn else_if_chain_rejects_over_budget_ast_depth() {
+        let mut parser = Parser::from("if (a) x else if (b) y");
+        parser.else_if_depth = MAX_ELSE_IF_DEPTH;
+        assert!(parser
+            .expression()
+            .unwrap_err()
+            .to_string()
+            .ends_with("else-if chain depth exceeded"));
+        assert_eq!(parser.else_if_depth, MAX_ELSE_IF_DEPTH);
     }
 
     #[test]
