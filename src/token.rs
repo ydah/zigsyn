@@ -1,4 +1,6 @@
 use std::fmt;
+use std::ops::Deref;
+use std::sync::Arc;
 
 use strum::{EnumString, IntoStaticStr};
 
@@ -518,6 +520,84 @@ pub enum Token {
     Keyword(Keyword),
     Symbol(Symbol),
     Literal(LitKind, String),
+}
+
+/// Immutable tokens from one syntax node, backed by the source's shared tokens.
+#[derive(Clone, Default)]
+pub struct TokenSpan {
+    backing: Arc<Vec<Token>>,
+    start: usize,
+    end: usize,
+}
+
+impl TokenSpan {
+    pub(crate) fn from_shared(backing: &Arc<Vec<Token>>, start: usize, end: usize) -> Self {
+        Self {
+            backing: Arc::clone(backing),
+            start,
+            end,
+        }
+    }
+
+    pub fn as_slice(&self) -> &[Token] {
+        &self.backing[self.start..self.end]
+    }
+}
+
+impl Deref for TokenSpan {
+    type Target = [Token];
+
+    fn deref(&self) -> &[Token] {
+        self.as_slice()
+    }
+}
+
+impl From<Vec<Token>> for TokenSpan {
+    fn from(tokens: Vec<Token>) -> Self {
+        Self {
+            start: 0,
+            end: tokens.len(),
+            backing: Arc::new(tokens),
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a TokenSpan {
+    type Item = &'a Token;
+    type IntoIter = std::slice::Iter<'a, Token>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl fmt::Debug for TokenSpan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_slice(), formatter)
+    }
+}
+
+impl PartialEq for TokenSpan {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for TokenSpan {}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for TokenSpan {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(self.as_slice(), serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for TokenSpan {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let tokens = <Vec<Token> as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Self::from(tokens))
+    }
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

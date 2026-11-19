@@ -24,8 +24,6 @@ pub struct ScannerMark {
 #[derive(Debug, Clone)]
 pub struct Scanner {
     source: String,
-    chars: Vec<char>,
-    byte_offsets: Vec<usize>,
     pos: usize,
     path: PathBuf,
     line_info: Vec<usize>,
@@ -57,10 +55,7 @@ impl Scanner {
     }
 
     fn new(source: String, path: PathBuf, options: ScanOptions) -> Self {
-        let pos = usize::from(source.starts_with('\u{feff}'));
-        let chars: Vec<char> = source.chars().collect();
-        let mut byte_offsets: Vec<usize> = source.char_indices().map(|(idx, _)| idx).collect();
-        byte_offsets.push(source.len());
+        let pos = usize::from(source.starts_with('\u{feff}')) * '\u{feff}'.len_utf8();
 
         let mut line_info = vec![0];
         for (idx, byte) in source.bytes().enumerate() {
@@ -71,8 +66,6 @@ impl Scanner {
 
         Self {
             source,
-            chars,
-            byte_offsets,
             pos,
             path,
             line_info,
@@ -93,7 +86,7 @@ impl Scanner {
     }
 
     pub fn position(&self) -> usize {
-        self.byte_pos()
+        self.pos
     }
 
     pub fn preback(&self) -> ScannerMark {
@@ -119,7 +112,7 @@ impl Scanner {
             return Ok(None);
         }
 
-        let pos = self.byte_pos();
+        let pos = self.pos;
         let token = self.scan_token()?;
         Ok(Some(SpannedToken { pos, token }))
     }
@@ -184,7 +177,7 @@ impl Scanner {
             self.advance();
         }
 
-        Token::Comment(kind, self.slice_chars(start, self.pos).to_owned())
+        Token::Comment(kind, self.source[start..self.pos].to_owned())
     }
 
     fn scan_identifier_or_keyword(&mut self) -> Token {
@@ -194,7 +187,7 @@ impl Scanner {
             self.advance();
         }
 
-        let text = self.slice_chars(start, self.pos);
+        let text = &self.source[start..self.pos];
         match text.parse::<Keyword>() {
             Ok(keyword) => Token::Keyword(keyword),
             Err(_) => Token::Literal(LitKind::Ident, text.to_owned()),
@@ -221,24 +214,24 @@ impl Scanner {
 
         Ok(Token::Literal(
             LitKind::BuiltinIdent,
-            self.slice_chars(start, self.pos).to_owned(),
+            self.source[start..self.pos].to_owned(),
         ))
     }
 
     fn scan_number(&mut self) -> Result<Token, Error> {
         let start = self.pos;
         let kind = if self.starts_with("0b") {
-            self.advance_n(2);
+            self.pos += 2;
             self.scan_digit_run(2, "binary integer")?;
             self.ensure_number_boundary()?;
             LitKind::Integer
         } else if self.starts_with("0o") {
-            self.advance_n(2);
+            self.pos += 2;
             self.scan_digit_run(8, "octal integer")?;
             self.ensure_number_boundary()?;
             LitKind::Integer
         } else if self.starts_with("0x") {
-            self.advance_n(2);
+            self.pos += 2;
             self.scan_digit_run(16, "hex integer")?;
             if self.peek() == Some('.') && self.peek_n(1) != Some('.') {
                 self.advance();
@@ -286,7 +279,7 @@ impl Scanner {
 
         Ok(Token::Literal(
             kind,
-            self.slice_chars(start, self.pos).to_owned(),
+            self.source[start..self.pos].to_owned(),
         ))
     }
 
@@ -299,7 +292,7 @@ impl Scanner {
         loop {
             match (self.peek(), self.peek_n(1)) {
                 (Some('_'), Some(next)) if is_digit_for_radix(next, radix) => {
-                    self.advance_n(2);
+                    self.pos += 2;
                 }
                 (Some('_'), _) => {
                     return Err(self.error_here("underscore must be followed by a digit"));
@@ -339,7 +332,7 @@ impl Scanner {
 
         Ok(Token::Literal(
             LitKind::Char,
-            self.slice_chars(start, self.pos).to_owned(),
+            self.source[start..self.pos].to_owned(),
         ))
     }
 
@@ -372,7 +365,7 @@ impl Scanner {
 
         Ok(Token::Literal(
             kind,
-            self.slice_chars(start, self.pos).to_owned(),
+            self.source[start..self.pos].to_owned(),
         ))
     }
 
@@ -443,7 +436,9 @@ impl Scanner {
             }
 
             let skip_start = self.pos;
-            while matches!(self.peek(), Some(' ' | '\n' | '\t' | '\r')) {
+            while matches!(self.peek(), Some(' ' | '\n'))
+                || (!self.options.strict_whitespace && matches!(self.peek(), Some('\t' | '\r')))
+            {
                 self.advance();
             }
 
@@ -457,7 +452,7 @@ impl Scanner {
 
         Token::Literal(
             LitKind::MultilineString,
-            self.slice_chars(start, self.pos).to_owned(),
+            self.source[start..self.pos].to_owned(),
         )
     }
 
@@ -472,7 +467,7 @@ impl Scanner {
 
         for lexeme in SYMBOLS {
             if self.starts_with(lexeme) {
-                self.advance_n(lexeme.chars().count());
+                self.pos += lexeme.len();
                 if let Some(symbol) = Symbol::from_lexeme(lexeme) {
                     return Ok(Token::Symbol(symbol));
                 }
@@ -483,39 +478,27 @@ impl Scanner {
     }
 
     fn starts_with(&self, needle: &str) -> bool {
-        self.source[self.byte_pos()..].starts_with(needle)
+        self.source[self.pos..].starts_with(needle)
     }
 
     fn peek(&self) -> Option<char> {
-        self.chars.get(self.pos).copied()
+        self.source[self.pos..].chars().next()
     }
 
     fn peek_n(&self, n: usize) -> Option<char> {
-        self.chars.get(self.pos + n).copied()
+        self.source[self.pos..].chars().nth(n)
     }
 
     fn advance(&mut self) {
-        self.pos += 1;
-    }
-
-    fn advance_n(&mut self, count: usize) {
-        self.pos += count;
+        self.pos += self.peek().expect("character at scanner cursor").len_utf8();
     }
 
     fn is_eof(&self) -> bool {
-        self.pos >= self.chars.len()
-    }
-
-    fn byte_pos(&self) -> usize {
-        self.byte_offsets[self.pos]
-    }
-
-    fn slice_chars(&self, start: usize, end: usize) -> &str {
-        &self.source[self.byte_offsets[start]..self.byte_offsets[end]]
+        self.pos >= self.source.len()
     }
 
     fn error_here(&self, reason: &str) -> Error {
-        self.error_at(self.byte_pos(), reason)
+        self.error_at(self.pos, reason)
     }
 
     fn error_at(&self, pos: usize, reason: &str) -> Error {
@@ -545,6 +528,37 @@ mod tests {
     use crate::token::TokenKind;
 
     use super::*;
+
+    #[test]
+    fn strict_whitespace_checks_multiline_string_indentation() {
+        let source = "\\\\first\n\t\\\\second";
+        let error = Scanner::with_options(
+            source,
+            ScanOptions {
+                strict_whitespace: true,
+            },
+        )
+        .scan_all()
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::Syntax { offset, .. } if offset == source.find('\t').unwrap())
+        );
+    }
+
+    #[test]
+    fn scanner_uses_byte_offsets_across_unicode_and_rewind() {
+        let source = "\"é\" @?";
+        let mut scanner = Scanner::from(source);
+        let mark = scanner.preback();
+        let string = scanner.next_token().unwrap().unwrap();
+        assert_eq!(scanner.position(), "\"é\"".len());
+        scanner.goback(mark);
+        assert_eq!(scanner.next_token().unwrap(), Some(string));
+        assert!(matches!(
+            scanner.next_token(),
+            Err(Error::Syntax { offset, .. }) if offset == source.find('@').unwrap()
+        ));
+    }
 
     fn scan_tokens(source: &str) -> Vec<Token> {
         Scanner::from(source)
