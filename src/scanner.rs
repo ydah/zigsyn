@@ -52,7 +52,7 @@ impl Scanner {
         options: ScanOptions,
     ) -> Result<Self, Error> {
         let path = path.as_ref();
-        let source = fs::read_to_string(path)?;
+        let source = fs::read_to_string(path).map_err(|source| Error::io_at(path, source))?;
         Ok(Self::new(source, path.to_path_buf(), options))
     }
 

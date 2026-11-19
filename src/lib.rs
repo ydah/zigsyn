@@ -34,15 +34,34 @@ pub fn parse_file<P: AsRef<Path>>(path: P) -> Result<ast::File, Error> {
     Parser::from_file(path)?.parse_file()
 }
 
-/// Parses every `.zig` file directly under `dir`.
+/// Parses every `.zig` file directly under `dir`, stopping at the first error.
 pub fn parse_dir<P: AsRef<Path>>(dir: P) -> Result<HashMap<String, ast::File>, Error> {
-    let dir = dir.as_ref();
+    parse_dir_with(dir.as_ref(), std::convert::identity)
+}
+
+/// Parses every `.zig` file directly under `dir` and returns each file's result.
+///
+/// Directory traversal errors and non-UTF-8 file names produce an outer error.
+pub fn parse_dir_entries<P: AsRef<Path>>(
+    dir: P,
+) -> Result<HashMap<String, Result<ast::File, Error>>, Error> {
+    parse_dir_with(dir.as_ref(), Ok)
+}
+
+fn parse_dir_with<T>(
+    dir: &Path,
+    map_result: impl Fn(Result<ast::File, Error>) -> Result<T, Error>,
+) -> Result<HashMap<String, T>, Error> {
     let mut files = HashMap::new();
 
     for entry in fs::read_dir(dir).map_err(|source| Error::io_at(dir, source))? {
-        let entry = entry?;
+        let entry = entry.map_err(|source| Error::io_at(dir, source))?;
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("zig") {
+            continue;
+        }
+        let metadata = fs::metadata(&path);
+        if metadata.as_ref().is_ok_and(|metadata| !metadata.is_file()) {
             continue;
         }
 
@@ -56,7 +75,10 @@ pub fn parse_dir<P: AsRef<Path>>(dir: P) -> Result<HashMap<String, ast::File>, E
                     std::io::Error::new(std::io::ErrorKind::InvalidData, "non UTF-8 file name"),
                 )
             })?;
-        files.insert(name, parse_file(path)?);
+        let file = metadata
+            .map_err(|source| Error::io_at(&path, source))
+            .and_then(|_| parse_file(path));
+        files.insert(name, map_result(file)?);
     }
 
     Ok(files)

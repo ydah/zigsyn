@@ -76,6 +76,7 @@ let expression = parser.expression().expect("valid Zig expression");
 - `zigsyn::parse_source(source)` parses a string into `ast::File`.
 - `zigsyn::parse_file(path)` parses a `.zig` file into `ast::File`.
 - `zigsyn::parse_dir(path)` parses direct `.zig` children of a directory.
+- `zigsyn::parse_dir_entries(path)` returns each direct `.zig` file's parse result.
 - `zigsyn::Parser` exposes lower-level parsing entry points.
 - `zigsyn::scanner::Scanner` exposes tokenization.
 
