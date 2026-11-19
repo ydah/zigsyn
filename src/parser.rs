@@ -154,15 +154,6 @@ impl Parser {
             let mark = self.preback();
             let pos = self.current_pos();
             let expr = self.parse_switch_expr()?;
-            if self.consume_symbol(Symbol::Semicolon) {
-                let tokens = self.tokens_since(mark);
-                return Ok(ast::Statement::Expr(Box::new(ast::ExprStmt {
-                    pos,
-                    expr: ast::Expression::Switch(expr),
-                    semicolon: true,
-                    tokens,
-                })));
-            }
             let tokens = self.tokens_since(mark);
             return Ok(ast::Statement::Switch(Box::new(ast::SwitchStmt {
                 pos,
@@ -175,15 +166,14 @@ impl Parser {
             return self.parse_labeled_statement();
         }
 
-        self.parse_expr_or_assign_statement()
+        self.parse_expr_or_assign_statement(true)
     }
 
     fn parse_prefixed_statement(&mut self, keyword: Keyword) -> Result<ast::Statement, Error> {
         let mark = self.preback();
         let pos = self.current_pos();
         self.expect_keyword(keyword)?;
-        let body = Box::new(self.try_parse_statement()?);
-        self.consume_symbol(Symbol::Semicolon);
+        let body = Box::new(self.parse_prefixed_body(keyword == Keyword::Comptime)?);
         let tokens = self.tokens_since(mark);
         Ok(match keyword {
             Keyword::Comptime => {
@@ -213,8 +203,7 @@ impl Parser {
         } else {
             None
         };
-        let body = Box::new(self.try_parse_statement()?);
-        self.consume_symbol(Symbol::Semicolon);
+        let body = Box::new(self.parse_prefixed_body(false)?);
         let tokens = self.tokens_since(mark);
         Ok(ast::Statement::Defer(Box::new(ast::DeferStmt {
             pos,
@@ -223,6 +212,17 @@ impl Parser {
             body,
             tokens,
         })))
+    }
+
+    fn parse_prefixed_body(&mut self, allow_declarations: bool) -> Result<ast::Statement, Error> {
+        if self.current_is_block_expr()
+            || (allow_declarations
+                && (self.current_is_keyword(Keyword::Const)
+                    || self.current_is_keyword(Keyword::Var)))
+        {
+            return self.try_parse_statement();
+        }
+        self.parse_expr_or_assign_statement(allow_declarations)
     }
 
     fn parse_if_statement(&mut self) -> Result<ast::Statement, Error> {
@@ -260,12 +260,7 @@ impl Parser {
 
     fn parse_control_body_statement(&mut self) -> Result<(ast::Statement, bool), Error> {
         self.skip_comments();
-        if self.current_is_symbol(Symbol::LBrace)
-            || (self.current_is_block_label()
-                && self
-                    .peek_non_comment(2)
-                    .is_some_and(|token| matches!(token.token, Token::Symbol(Symbol::LBrace))))
-        {
+        if self.current_is_block_expr() {
             return Ok((self.try_parse_statement()?, false));
         }
 
@@ -333,7 +328,6 @@ impl Parser {
             }
             (None, None)
         };
-        self.consume_symbol(Symbol::Semicolon);
         let tokens = self.tokens_since(mark);
         Ok(ast::Statement::Loop(Box::new(ast::LoopStmt {
             pos,
@@ -386,7 +380,10 @@ impl Parser {
         ))
     }
 
-    fn parse_expr_or_assign_statement(&mut self) -> Result<ast::Statement, Error> {
+    fn parse_expr_or_assign_statement(
+        &mut self,
+        allow_declarations: bool,
+    ) -> Result<ast::Statement, Error> {
         let mark = self.preback();
         let pos = self.current_pos();
         let first_lhs = self.parse_expr_bp(0)?;
@@ -398,6 +395,9 @@ impl Parser {
             loop {
                 if self.current_is_keyword(Keyword::Const) || self.current_is_keyword(Keyword::Var)
                 {
+                    if !allow_declarations {
+                        return Err(self.error_at(self.current_pos(), "expected assignment target"));
+                    }
                     let proto = self.parse_local_var_proto()?;
                     if !has_var_proto {
                         first_keyword = proto.keyword;
@@ -464,18 +464,12 @@ impl Parser {
             })));
         }
 
-        let semicolon = self.consume_symbol(Symbol::Semicolon);
-        if !semicolon && !statement_expr_can_omit_semicolon(&lhs) {
-            return Err(self.unexpected(
-                vec![TokenKind::Symbol(Symbol::Semicolon)],
-                self.current().map(|token| token.token.clone()),
-            ));
-        }
+        self.expect_symbol(Symbol::Semicolon)?;
         let tokens = self.tokens_since(mark);
         Ok(ast::Statement::Expr(Box::new(ast::ExprStmt {
             pos,
             expr: lhs,
-            semicolon,
+            semicolon: true,
             tokens,
         })))
     }
@@ -2433,6 +2427,14 @@ impl Parser {
             })
     }
 
+    fn current_is_block_expr(&self) -> bool {
+        self.current_is_symbol(Symbol::LBrace)
+            || (self.current_is_block_label()
+                && self
+                    .peek_non_comment(2)
+                    .is_some_and(|token| matches!(token.token, Token::Symbol(Symbol::LBrace))))
+    }
+
     fn current_stops_optional_expr(&self) -> bool {
         matches!(
             self.current().map(|token| &token.token),
@@ -2678,17 +2680,6 @@ fn modifier_to_var(modifier: Option<ast::FnModifier>) -> Result<Option<ast::VarM
         }
         None => None,
     })
-}
-
-fn statement_expr_can_omit_semicolon(expr: &ast::Expression) -> bool {
-    matches!(
-        expr,
-        ast::Expression::Block(_)
-            | ast::Expression::If(_)
-            | ast::Expression::While(_)
-            | ast::Expression::For(_)
-            | ast::Expression::Switch(_)
-    )
 }
 
 #[cfg(test)]
@@ -2952,6 +2943,45 @@ pub fn add(a: u32, comptime b: anytype) u32 {
             &switch_expr.prongs[0].body,
             ast::Expression::Assign(_)
         ));
+    }
+
+    #[test]
+    fn rejects_extra_statement_semicolons() {
+        for statement in [
+            "while (a) {};",
+            "defer f();;",
+            "comptime {};",
+            "switch (a) { else => {} };",
+            "if (a) {};",
+        ] {
+            assert!(
+                parse_source(format!("fn f() void {{ {statement} }}")).is_err(),
+                "{statement}"
+            );
+        }
+    }
+
+    #[test]
+    fn defer_accepts_blocks_and_terminated_expressions() {
+        for statement in [
+            "defer { f(); }",
+            "defer f();",
+            "defer if (a) {};",
+            "defer x, y = values;",
+        ] {
+            Parser::from(statement).parse_statement().unwrap();
+        }
+        for statement in [
+            "defer const x = 1;",
+            "defer defer f();",
+            "defer if (a) {}",
+            "defer x, var y = values;",
+        ] {
+            assert!(
+                Parser::from(statement).parse_statement().is_err(),
+                "{statement}"
+            );
+        }
     }
 
     #[test]
