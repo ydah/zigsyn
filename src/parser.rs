@@ -1182,10 +1182,9 @@ impl Parser {
     fn parse_pointer_type_prefix(&mut self) -> Result<ast::Expression, Error> {
         let mark = self.preback();
         let pos = self.current_pos();
-        let kind = if self.consume_symbol(Symbol::Asterisk) {
+        let double_asterisk = self.consume_symbol(Symbol::Asterisk2);
+        let kind = if double_asterisk || self.consume_symbol(Symbol::Asterisk) {
             ast::PointerKind::One
-        } else if self.consume_symbol(Symbol::Asterisk2) {
-            ast::PointerKind::Many
         } else {
             self.expect_symbol(Symbol::LBracket)?;
             self.expect_symbol(Symbol::Asterisk)?;
@@ -1201,14 +1200,26 @@ impl Parser {
         };
         let modifiers = self.parse_pointer_modifiers()?;
         let child = self.parse_type_prefix_operand()?;
-        let tokens = self.tokens_since(mark);
-        Ok(ast::Expression::Pointer(ast::PointerType {
+        let mut pointer = ast::PointerType {
             pos,
             kind,
             modifiers,
             child: Box::new(child),
-            tokens,
-        }))
+            tokens: self.tokens_since(mark),
+        };
+        if double_asterisk {
+            let tokens = pointer.tokens.clone();
+            pointer.pos += 1;
+            pointer.tokens[0] = Token::Symbol(Symbol::Asterisk);
+            pointer = ast::PointerType {
+                pos,
+                kind: ast::PointerKind::One,
+                modifiers: Vec::new(),
+                child: Box::new(ast::Expression::Pointer(pointer)),
+                tokens,
+            };
+        }
+        Ok(ast::Expression::Pointer(pointer))
     }
 
     fn parse_slice_type_prefix(&mut self) -> Result<ast::Expression, Error> {
@@ -2797,6 +2808,24 @@ pub fn add(a: u32, comptime b: anytype) u32 {
             panic!("expected sentinel pointer type");
         };
         assert!(matches!(ptr.kind, ast::PointerKind::Sentinel(_)));
+    }
+
+    #[test]
+    fn double_asterisk_builds_two_single_item_pointers() {
+        let ast::Expression::Pointer(outer) = Parser::from("**const u8").expression().unwrap()
+        else {
+            panic!("expected outer pointer");
+        };
+        assert!(matches!(outer.kind, ast::PointerKind::One));
+        assert!(outer.modifiers.is_empty());
+        assert_eq!(outer.tokens[0], Token::Symbol(Symbol::Asterisk2));
+        let ast::Expression::Pointer(inner) = outer.child.as_ref() else {
+            panic!("expected inner pointer");
+        };
+        assert!(matches!(inner.kind, ast::PointerKind::One));
+        assert_eq!(inner.pos, outer.pos + 1);
+        assert_eq!(inner.modifiers, [ast::PointerModifier::Const]);
+        assert_eq!(inner.tokens[0], Token::Symbol(Symbol::Asterisk));
     }
 
     #[test]
