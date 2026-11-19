@@ -1,8 +1,8 @@
 # zigsyn
 
 `zigsyn` is a pure Rust scanner and parser for Zig source code. It parses Zig
-syntax into a structured AST while preserving token-level information for
-lossless inspection.
+syntax into a structured AST. Declarations and other nodes retain token lists,
+and the scanner records token start positions as byte offsets.
 
 The parser is driven by the bundled [`spec/grammar.peg`](spec/grammar.peg)
 snapshot from [`ziglang/zig-spec`](https://github.com/ziglang/zig-spec).

@@ -586,10 +586,12 @@ impl Parser {
             return self.parse_comptime_decl(docs);
         }
 
+        let mark = self.preback();
+        let pos = self.current_pos();
         let visibility = self.consume_keyword(Keyword::Pub).then_some(Keyword::Pub);
         let modifier = self.parse_decl_modifier()?;
         if self.current_is_keyword(Keyword::Fn) {
-            return self.parse_fn_decl(docs, visibility, modifier);
+            return self.parse_fn_decl(mark, pos, docs, visibility, modifier);
         }
 
         if matches!(
@@ -607,7 +609,13 @@ impl Parser {
             ) {
                 return Err(self.error_at(self.current_pos(), "inline modifier requires fn"));
             }
-            return self.parse_global_var_decl(docs, visibility, modifier_to_var(modifier)?);
+            return self.parse_global_var_decl(
+                mark,
+                pos,
+                docs,
+                visibility,
+                modifier_to_var(modifier)?,
+            );
         }
 
         if modifier.is_some() || visibility.is_some() {
@@ -698,12 +706,14 @@ impl Parser {
 
     fn parse_fn_decl(
         &mut self,
+        mark: ParserMark,
+        pos: usize,
         docs: Vec<Rc<ast::Comment>>,
         visibility: Option<Keyword>,
         modifier: Option<ast::FnModifier>,
     ) -> Result<ast::ContainerMember, Error> {
-        let mark = self.preback();
         let mut decl = self.parse_fn_proto(docs, visibility, modifier)?;
+        decl.pos = pos;
         decl.body = if self.consume_symbol(Symbol::Semicolon) {
             None
         } else {
@@ -812,26 +822,16 @@ impl Parser {
         Ok(params)
     }
 
+    /// GlobalVarDecl <- VarDeclProto (EQUAL Expr)? SEMICOLON
     fn parse_global_var_decl(
         &mut self,
+        mark: ParserMark,
+        pos: usize,
         docs: Vec<Rc<ast::Comment>>,
         visibility: Option<Keyword>,
         extern_export: Option<ast::VarModifier>,
     ) -> Result<ast::ContainerMember, Error> {
-        let decl = self.parse_var_decl(docs, visibility, extern_export, true)?;
-        Ok(ast::ContainerMember::Var(Box::new(decl)))
-    }
-
-    /// VarDeclProto <- (KEYWORD_const / KEYWORD_var) IDENTIFIER (COLON TypeExpr)? ByteAlign? AddrSpace? LinkSection?
-    fn parse_var_decl(
-        &mut self,
-        docs: Vec<Rc<ast::Comment>>,
-        visibility: Option<Keyword>,
-        extern_export: Option<ast::VarModifier>,
-        expect_semicolon: bool,
-    ) -> Result<ast::VarDecl, Error> {
-        let mark = self.preback();
-        let pos = self.current_pos();
+        let proto_pos = self.current_pos();
         let threadlocal = self.consume_keyword(Keyword::Threadlocal);
         let keyword = if self.consume_keyword(Keyword::Const) {
             Keyword::Const
@@ -853,17 +853,15 @@ impl Parser {
         } else {
             None
         };
-        if expect_semicolon {
-            self.expect_symbol(Symbol::Semicolon)?;
-        }
+        self.expect_symbol(Symbol::Semicolon)?;
         let tokens = self.tokens_since(mark);
         let lhs = vec![ast::VarProtoOrExpr::VarProto {
-            pos,
+            pos: proto_pos,
             keyword,
             name,
             ty,
         }];
-        Ok(ast::VarDecl {
+        Ok(ast::ContainerMember::Var(Box::new(ast::VarDecl {
             pos,
             docs,
             visibility,
@@ -876,7 +874,7 @@ impl Parser {
             linksection,
             init,
             tokens,
-        })
+        })))
     }
 
     fn parse_container_field(
@@ -2745,6 +2743,46 @@ test "basic" {}
         assert!(matches!(file.members[0], ast::ContainerMember::Var(_)));
         assert!(matches!(file.members[1], ast::ContainerMember::Fn(_)));
         assert!(matches!(file.members[2], ast::ContainerMember::Test(_)));
+    }
+
+    #[test]
+    fn modified_declarations_start_at_the_first_modifier() {
+        let source = r#"/// docs
+pub inline fn f() void {}
+export var a: u8 = 1;
+extern "c" var b: c_int;"#;
+        let file = parse_source(source).unwrap();
+        let [ast::ContainerMember::Fn(fun), ast::ContainerMember::Var(exported), ast::ContainerMember::Var(external)] =
+            file.members.as_slice()
+        else {
+            panic!("expected a function and two variables");
+        };
+
+        assert_eq!(fun.pos, source.find("pub").unwrap());
+        assert!(matches!(
+            fun.tokens.as_slice(),
+            [
+                Token::Keyword(Keyword::Pub),
+                Token::Keyword(Keyword::Inline),
+                Token::Keyword(Keyword::Fn),
+                ..
+            ]
+        ));
+        assert_eq!(exported.pos, source.find("export").unwrap());
+        assert!(matches!(
+            exported.tokens.as_slice(),
+            [
+                Token::Keyword(Keyword::Export),
+                Token::Keyword(Keyword::Var),
+                ..
+            ]
+        ));
+        assert_eq!(external.pos, source.find("extern").unwrap());
+        assert!(matches!(
+            external.tokens.as_slice(),
+            [Token::Keyword(Keyword::Extern), Token::Literal(LitKind::String, abi), Token::Keyword(Keyword::Var), ..]
+                if abi == "\"c\""
+        ));
     }
 
     #[test]
