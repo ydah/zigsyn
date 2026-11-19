@@ -38,6 +38,13 @@ struct LocalVarProto {
     linksection: Option<ast::Expression>,
 }
 
+enum PayloadSyntax {
+    Plain,
+    Pointer,
+    Switch,
+    For,
+}
+
 impl Parser {
     pub fn from<S: AsRef<str>>(source: S) -> Self {
         let scanner = Scanner::from(source);
@@ -74,8 +81,8 @@ impl Parser {
         self.check_scan_error()?;
         self.validate_token_stream()?;
 
-        let mut container_docs = Vec::new();
-        let members = self.parse_container_members_until(None, &mut container_docs)?;
+        let container_docs = self.collect_doc_comments(CommentKind::ContainerDoc);
+        let members = self.parse_container_members_until(None)?;
 
         Ok(ast::File {
             path: self.path,
@@ -98,7 +105,7 @@ impl Parser {
 
     pub fn parse_statement(&mut self) -> Result<ast::Statement, Error> {
         self.check_scan_error()?;
-        self.collect_comments(&mut Vec::new());
+        self.skip_comments();
         let mark = self.preback();
         match self.try_parse_statement() {
             Ok(statement) => Ok(statement),
@@ -192,7 +199,7 @@ impl Parser {
             false
         };
         let payload = if err {
-            self.parse_optional_payload()?
+            self.parse_optional_payload(PayloadSyntax::Plain)?
         } else {
             None
         };
@@ -225,7 +232,7 @@ impl Parser {
         let (then_branch, then_semicolon) = self.parse_control_body_statement()?;
         self.skip_comments();
         let (else_payload, else_branch) = if self.consume_keyword(Keyword::Else) {
-            let payload = self.parse_optional_payload()?;
+            let payload = self.parse_optional_payload(PayloadSyntax::Plain)?;
             (payload, Some(Box::new(self.try_parse_statement()?)))
         } else {
             if !then_semicolon && !matches!(&then_branch, ast::Statement::Block(_)) {
@@ -305,7 +312,7 @@ impl Parser {
         self.skip_comments();
         let (else_payload, else_branch) = if self.consume_keyword(Keyword::Else) {
             let payload = match kind {
-                ast::LoopKind::While { .. } => self.parse_optional_payload()?,
+                ast::LoopKind::While { .. } => self.parse_optional_payload(PayloadSyntax::Plain)?,
                 ast::LoopKind::For { .. } => None,
             };
             (payload, Some(Box::new(self.try_parse_statement()?)))
@@ -563,6 +570,7 @@ impl Parser {
         docs: Vec<Rc<ast::Comment>>,
     ) -> Result<ast::ContainerMember, Error> {
         if self.current_is_keyword(Keyword::Test) {
+            self.reject_unattached_docs(&docs)?;
             return self.parse_test_decl(docs);
         }
 
@@ -571,6 +579,7 @@ impl Parser {
                 .peek_non_comment(1)
                 .is_some_and(|token| matches!(token.token, Token::Symbol(Symbol::LBrace)))
         {
+            self.reject_unattached_docs(&docs)?;
             return self.parse_comptime_decl(docs);
         }
 
@@ -748,12 +757,14 @@ impl Parser {
     fn parse_param_decl_list(&mut self) -> Result<Vec<ast::ParamDecl>, Error> {
         let mut params = Vec::new();
         while !self.current_is_symbol(Symbol::RParen) {
-            let docs = self.collect_comments(&mut Vec::new());
+            let docs = self.collect_doc_comments(CommentKind::Doc);
             if self.current_is_symbol(Symbol::RParen) {
+                self.reject_unattached_docs(&docs)?;
                 break;
             }
             let pos = self.current_pos();
             if self.consume_symbol(Symbol::Dot3) {
+                self.reject_unattached_docs(&docs)?;
                 params.push(ast::ParamDecl {
                     pos,
                     docs,
@@ -909,20 +920,26 @@ impl Parser {
         })))
     }
 
-    fn collect_comments(
-        &mut self,
-        container_docs: &mut Vec<Rc<ast::Comment>>,
-    ) -> Vec<Rc<ast::Comment>> {
+    fn collect_doc_comments(&mut self, kind: CommentKind) -> Vec<Rc<ast::Comment>> {
         let mut docs = Vec::new();
-        while let Some(comment) = self.take_comment() {
-            if comment.kind == CommentKind::Doc {
-                docs.push(Rc::clone(&comment));
-            } else if comment.kind == CommentKind::ContainerDoc {
-                container_docs.push(Rc::clone(&comment));
-            }
+        self.skip_comments();
+        while matches!(self.current().map(|token| &token.token), Some(Token::Comment(actual, _)) if *actual == kind)
+        {
+            let comment = self
+                .take_comment()
+                .expect("documentation comment at cursor");
+            docs.push(Rc::clone(&comment));
             self.comments.push(comment);
+            self.skip_comments();
         }
         docs
+    }
+
+    fn reject_unattached_docs(&self, docs: &[Rc<ast::Comment>]) -> Result<(), Error> {
+        if let Some(doc) = docs.first() {
+            return Err(self.error_at(doc.pos, "unattached documentation comment"));
+        }
+        Ok(())
     }
 
     fn take_comment(&mut self) -> Option<Rc<ast::Comment>> {
@@ -939,8 +956,14 @@ impl Parser {
     }
 
     fn skip_comments(&mut self) {
-        let mut container_docs = Vec::new();
-        self.collect_comments(&mut container_docs);
+        while self
+            .tokens
+            .get(self.cursor)
+            .is_some_and(|token| matches!(token.token, Token::Comment(CommentKind::Line, _)))
+        {
+            let comment = self.take_comment().expect("line comment at cursor");
+            self.comments.push(comment);
+        }
     }
 
     /// Block <- LBRACE Statement* RBRACE
@@ -1070,7 +1093,7 @@ impl Parser {
             self.advance();
 
             if op == Token::Keyword(Keyword::Catch) {
-                let payload = self.parse_optional_payload()?;
+                let payload = self.parse_optional_payload(PayloadSyntax::Plain)?;
                 let rhs = self.parse_expr_bp(precedence + 1)?;
                 lhs = ast::Expression::Catch(ast::CatchExpr {
                     pos: op_pos,
@@ -1193,7 +1216,7 @@ impl Parser {
             self.expect_symbol(Symbol::RBracket)?;
             kind
         };
-        let modifiers = self.parse_pointer_modifiers()?;
+        let modifiers = self.parse_pointer_modifiers(true)?;
         let child = self.parse_type_prefix_operand()?;
         let mut pointer = ast::PointerType {
             pos,
@@ -1227,7 +1250,7 @@ impl Parser {
             None
         };
         self.expect_symbol(Symbol::RBracket)?;
-        let modifiers = self.parse_pointer_modifiers()?;
+        let modifiers = self.parse_pointer_modifiers(false)?;
         let child = self.parse_type_prefix_operand()?;
         let tokens = self.tokens_since(mark);
         Ok(ast::Expression::SliceType(ast::SliceType {
@@ -1261,7 +1284,10 @@ impl Parser {
         }))
     }
 
-    fn parse_pointer_modifiers(&mut self) -> Result<Vec<ast::PointerModifier>, Error> {
+    fn parse_pointer_modifiers(
+        &mut self,
+        allow_bit_range: bool,
+    ) -> Result<Vec<ast::PointerModifier>, Error> {
         let mut modifiers = Vec::new();
         loop {
             if self.consume_keyword(Keyword::Const) {
@@ -1278,7 +1304,7 @@ impl Parser {
             } else if self.consume_keyword(Keyword::Align) {
                 self.expect_symbol(Symbol::LParen)?;
                 let mut exprs = vec![self.parse_value_expr()?];
-                if self.consume_symbol(Symbol::Colon) {
+                if allow_bit_range && self.consume_symbol(Symbol::Colon) {
                     exprs.push(self.parse_value_expr()?);
                     self.expect_symbol(Symbol::Colon)?;
                     exprs.push(self.parse_value_expr()?);
@@ -1440,14 +1466,23 @@ impl Parser {
             if self.current_is_symbol(Symbol::RBrace) {
                 break;
             }
-            if self.current_is_symbol(Symbol::Dot)
+            let is_field = self.current_is_symbol(Symbol::Dot)
                 && self
                     .peek_non_comment(1)
                     .is_some_and(|token| matches!(token.token, Token::Literal(LitKind::Ident, _)))
                 && self
                     .peek_non_comment(2)
-                    .is_some_and(|token| matches!(token.token, Token::Symbol(Symbol::Equal)))
+                    .is_some_and(|token| matches!(token.token, Token::Symbol(Symbol::Equal)));
+            if entries
+                .first()
+                .is_some_and(|first| matches!(first, ast::InitEntry::Field { .. }) != is_field)
             {
+                return Err(self.error_at(
+                    self.current_pos(),
+                    "cannot mix field and positional initializers",
+                ));
+            }
+            if is_field {
                 self.expect_symbol(Symbol::Dot)?;
                 let name = self.expect_ident(self.current_pos())?;
                 self.expect_symbol(Symbol::Equal)?;
@@ -1697,8 +1732,9 @@ impl Parser {
         self.expect_symbol(Symbol::LBrace)?;
         let mut names = Vec::new();
         while !self.current_is_symbol(Symbol::RBrace) {
-            self.collect_comments(&mut Vec::new());
+            let docs = self.collect_doc_comments(CommentKind::Doc);
             if self.current_is_symbol(Symbol::RBrace) {
+                self.reject_unattached_docs(&docs)?;
                 break;
             }
             names.push(self.expect_ident(self.current_pos())?);
@@ -1744,7 +1780,7 @@ impl Parser {
                 ))
             }
         };
-        let arg = if self.consume_symbol(Symbol::LParen) {
+        let arg = if kind != Keyword::Opaque && self.consume_symbol(Symbol::LParen) {
             let arg = if kind == Keyword::Union && self.consume_keyword(Keyword::Enum) {
                 let enum_mark = self.preback();
                 let enum_pos = self.tokens[enum_mark.cursor - 1].pos;
@@ -1769,7 +1805,8 @@ impl Parser {
             None
         };
         self.expect_symbol(Symbol::LBrace)?;
-        let members = self.parse_container_members_until(Some(Symbol::RBrace), &mut Vec::new())?;
+        self.collect_doc_comments(CommentKind::ContainerDoc);
+        let members = self.parse_container_members_until(Some(Symbol::RBrace))?;
         self.expect_symbol(Symbol::RBrace)?;
         let tokens = self.tokens_since(mark);
         Ok(ast::Expression::Container(ast::ContainerDecl {
@@ -1785,16 +1822,17 @@ impl Parser {
     fn parse_container_members_until(
         &mut self,
         end: Option<Symbol>,
-        container_docs: &mut Vec<Rc<ast::Comment>>,
     ) -> Result<Vec<ast::ContainerMember>, Error> {
         let mut members = Vec::new();
         let mut fields_closed = false;
         loop {
-            let docs = self.collect_comments(container_docs);
+            let docs = self.collect_doc_comments(CommentKind::Doc);
             if end.is_some_and(|symbol| self.current_is_symbol(symbol)) {
+                self.reject_unattached_docs(&docs)?;
                 break;
             }
             if self.is_eof() {
+                self.reject_unattached_docs(&docs)?;
                 if let Some(symbol) = end {
                     return Err(self.unexpected(vec![TokenKind::Symbol(symbol)], None));
                 }
@@ -1822,7 +1860,7 @@ impl Parser {
         self.expect_symbol(Symbol::LParen)?;
         let condition = self.parse_expr_bp(0)?;
         self.expect_symbol(Symbol::RParen)?;
-        let payload = self.parse_optional_payload()?;
+        let payload = self.parse_optional_payload(PayloadSyntax::Pointer)?;
         Ok((condition, payload))
     }
 
@@ -1834,7 +1872,7 @@ impl Parser {
         let then_branch = self.parse_expr_bp(0)?;
         self.skip_comments();
         let (else_payload, else_branch) = if self.consume_keyword(Keyword::Else) {
-            let payload = self.parse_optional_payload()?;
+            let payload = self.parse_optional_payload(PayloadSyntax::Plain)?;
             (payload, Some(Box::new(self.parse_expr_bp(0)?)))
         } else {
             (None, None)
@@ -1866,7 +1904,7 @@ impl Parser {
         self.expect_symbol(Symbol::LParen)?;
         let condition = self.parse_expr_bp(0)?;
         self.expect_symbol(Symbol::RParen)?;
-        let payload = self.parse_optional_payload()?;
+        let payload = self.parse_optional_payload(PayloadSyntax::Pointer)?;
         let continue_expr = if self.consume_symbol(Symbol::Colon) {
             self.expect_symbol(Symbol::LParen)?;
             let expr = self.parse_assign_expr()?;
@@ -1892,7 +1930,7 @@ impl Parser {
         let body = self.parse_expr_bp(0)?;
         self.skip_comments();
         let (else_payload, else_branch) = if self.consume_keyword(Keyword::Else) {
-            let payload = self.parse_optional_payload()?;
+            let payload = self.parse_optional_payload(PayloadSyntax::Plain)?;
             (payload, Some(Box::new(self.parse_expr_bp(0)?)))
         } else {
             (None, None)
@@ -1916,30 +1954,19 @@ impl Parser {
     fn parse_for_prefix(&mut self) -> Result<(Vec<ast::ForItem>, ast::Payload), Error> {
         self.expect_keyword(Keyword::For)?;
         self.expect_symbol(Symbol::LParen)?;
-        let mut items = Vec::new();
-        if !self.current_is_symbol(Symbol::RParen) {
-            loop {
-                self.skip_comments();
-                if self.current_is_symbol(Symbol::RParen) {
-                    break;
-                }
-                items.push(self.parse_for_item()?);
-                if !self.consume_symbol(Symbol::Comma) {
-                    break;
-                }
-                self.skip_comments();
-                if self.current_is_symbol(Symbol::RParen) {
-                    break;
-                }
-            }
+        let mut items = vec![self.parse_for_item()?];
+        while self.consume_symbol(Symbol::Comma) && !self.current_is_symbol(Symbol::RParen) {
+            items.push(self.parse_for_item()?);
         }
         self.expect_symbol(Symbol::RParen)?;
-        let payload = self.parse_optional_payload()?.ok_or_else(|| {
-            self.error_at(
-                self.current_pos(),
-                "for expression requires pointer list payload",
-            )
-        })?;
+        let payload = self
+            .parse_optional_payload(PayloadSyntax::For)?
+            .ok_or_else(|| {
+                self.error_at(
+                    self.current_pos(),
+                    "for expression requires pointer list payload",
+                )
+            })?;
         Ok((items, payload))
     }
 
@@ -2058,7 +2085,7 @@ impl Parser {
             cases
         };
         self.expect_symbol(Symbol::EqualRArrow)?;
-        let payload = self.parse_optional_payload()?;
+        let payload = self.parse_optional_payload(PayloadSyntax::Switch)?;
         let body = self.parse_single_assign_expr()?;
         Ok(ast::SwitchProng {
             pos,
@@ -2219,25 +2246,30 @@ impl Parser {
         Ok(args)
     }
 
-    fn parse_optional_payload(&mut self) -> Result<Option<ast::Payload>, Error> {
+    fn parse_optional_payload(
+        &mut self,
+        syntax: PayloadSyntax,
+    ) -> Result<Option<ast::Payload>, Error> {
         if !self.current_is_symbol(Symbol::Pipe) {
             return Ok(None);
         }
         let pos = self.current_pos();
         self.advance();
-        let mut stars = Vec::new();
-        let star = self.consume_symbol(Symbol::Asterisk);
-        stars.push(star);
-        let mut names = Vec::new();
-        names.push(self.expect_ident(self.current_pos())?);
-        while self.current_is_symbol(Symbol::Comma) {
-            self.advance();
-            if self.current_is_symbol(Symbol::Pipe) {
-                break;
+        let star = !matches!(syntax, PayloadSyntax::Plain) && self.consume_symbol(Symbol::Asterisk);
+        let mut stars = vec![star];
+        let mut names = vec![self.expect_ident(self.current_pos())?];
+        match syntax {
+            PayloadSyntax::Switch if self.consume_symbol(Symbol::Comma) => {
+                stars.push(false);
+                names.push(self.expect_ident(self.current_pos())?);
             }
-            let star = self.consume_symbol(Symbol::Asterisk);
-            stars.push(star);
-            names.push(self.expect_ident(self.current_pos())?);
+            PayloadSyntax::For => {
+                while self.consume_symbol(Symbol::Comma) && !self.current_is_symbol(Symbol::Pipe) {
+                    stars.push(self.consume_symbol(Symbol::Asterisk));
+                    names.push(self.expect_ident(self.current_pos())?);
+                }
+            }
+            _ => {}
         }
         self.expect_symbol(Symbol::Pipe)?;
         Ok(Some(ast::Payload {
@@ -2388,14 +2420,7 @@ impl Parser {
     }
 
     fn advance(&mut self) {
-        while self
-            .tokens
-            .get(self.cursor)
-            .is_some_and(|token| matches!(token.token, Token::Comment(CommentKind::Line, _)))
-        {
-            let comment = self.take_comment().expect("line comment at cursor");
-            self.comments.push(comment);
-        }
+        self.skip_comments();
         self.cursor += 1;
     }
 
@@ -2777,6 +2802,72 @@ test "basic" {}
         ] {
             parse_source(source).unwrap_or_else(|err| panic!("{source}: {err}"));
         }
+    }
+
+    #[test]
+    fn rejects_syntax_outside_each_constructs_grammar() {
+        let invalid = [
+            "fn f() void { for () |x| {} }",
+            "fn f() void { if (x) |a, b| {} }",
+            "fn f() void { if (x) |a,| {} }",
+            "fn f() void { if (x) {} else |*e| {} }",
+            "const x = value catch |*e| 0;",
+            "fn f() void { errdefer |*e| {} }",
+            "const x = switch (value) { inline else => |a, *tag| a };",
+            "const x = switch (value) { inline else => |a, tag,| a };",
+            "const T = opaque(u8) {};",
+            "const T = []align(1:2:3) u8;",
+            "const x = .{ .a = 1, 2 };",
+            "const x = .{ 1, .a = 2 };",
+        ];
+        let accepted: Vec<_> = invalid
+            .into_iter()
+            .filter(|source| parse_source(source).is_ok())
+            .collect();
+        assert!(accepted.is_empty(), "accepted invalid syntax: {accepted:?}");
+
+        for source in [
+            "fn f() void { for (a, b) |*x, *y,| {} }",
+            "fn f() void { if (x) |*a| {} else |e| {} }",
+            "fn f() void { errdefer |e| {} }",
+            "const x = value catch |e| 0;",
+            "const x = switch (value) { inline else => |*a, tag| a };",
+            "const T = opaque {};",
+            "const T = []align(1) u8;",
+            "const T = *align(1:2:3) u8;",
+            "const x = .{ .a = 1, .b = 2 };",
+            "const x = .{ 1, 2 };",
+        ] {
+            parse_source(source).unwrap_or_else(|err| panic!("{source}: {err}"));
+        }
+    }
+
+    #[test]
+    fn rejects_documentation_comments_without_a_valid_target() {
+        let invalid = [
+            "const x = 1;\n/// Detached",
+            "const x = 1;\n//! Late\nconst y = 2;",
+            "const T = struct { const x = 1;\n//! Late\n};",
+            "fn f() void {\n/// Local\nconst x = 1; }",
+            "/// Test\ntest {}",
+            "/// Comptime\ncomptime {}",
+            "fn f(\n/// Missing\n) void {}",
+            "const E = error{ A,\n/// Missing\n};",
+        ];
+        let accepted: Vec<_> = invalid
+            .into_iter()
+            .filter(|source| parse_source(source).is_ok())
+            .collect();
+        assert!(accepted.is_empty(), "accepted invalid syntax: {accepted:?}");
+
+        let file = parse_source(
+            "// License\n//! Module\n/// Function\nfn f(\n/// Parameter\na: u8,\n) void {}\n\
+             const T = struct {\n//! Container\n/// Field\nx: u8, };\n\
+             const E = error{\n/// Error member\nA, };",
+        )
+        .unwrap();
+        assert_eq!(file.container_docs.len(), 1);
+        assert_eq!(file.comments.len(), 7);
     }
 
     #[test]
