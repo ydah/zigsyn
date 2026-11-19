@@ -86,6 +86,14 @@ let expression = parser.expression().expect("valid Zig expression");
   left-hand side entry.
 - Replace `init.fields` with `init.fields()` to iterate over initializer values
   in source order.
+- Match `Expression::Grouped { pos, expr }` and `Expression::Comptime { pos, expr }`.
+  `pos` identifies the opening parenthesis or `comptime` keyword.
+- Access `FnDecl::ret`, `IfExpr::condition`, and `IfExpr::then_branch` directly
+  as boxed expressions.
+- Replace `payload.star` with `payload.star()` to check the first capture.
+- Quoted identifiers use their decoded names when the result is UTF-8.
+  `Ident::name` retains the source spelling for names that cannot be decoded
+  as UTF-8. Scanner tokens keep the source spelling.
 - Parse functions return `zigsyn::Error`. Match `Error::Syntax` in place of
   `Error::Else`. Syntax and unexpected-token errors expose a zero-based byte
   `offset`. `Error::IO` exposes the underlying error as `source` and an optional
@@ -98,7 +106,8 @@ let expression = parser.expression().expect("valid Zig expression");
 
 With `serde`, `VarDecl` serializes its type annotations in `lhs` and `AnonInit`
 serializes its values in `entries`. Update JSON consumers that read the former
-`ty` and `fields` keys. The current AST can read JSON emitted by the 0.1.0 parser.
+`ty` and `fields` keys. Grouped and comptime expressions serialize `pos` and
+`expr` together. Reparse saved ASTs to recover these positions and decoded names.
 For formats that encode struct fields by position, regenerate the ASTs from Zig
 source or decode them with 0.1.0 and convert them to the current AST.
 
