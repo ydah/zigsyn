@@ -79,12 +79,16 @@ let expression = parser.expression().expect("valid Zig expression");
 - `zigsyn::Parser` exposes lower-level parsing entry points.
 - `zigsyn::scanner::Scanner` exposes tokenization.
 
-### Migrating from the 0.1.0 AST
+### Migrating from 0.1.0
 
 - Replace `var.ty` with `var.ty()` to borrow the type annotation on the first
   left-hand side entry.
 - Replace `init.fields` with `init.fields()` to iterate over initializer values
   in source order.
+- Parse functions return `zigsyn::Error`. Match `Error::Syntax` in place of
+  `Error::Else`. Syntax and unexpected-token errors expose a zero-based byte
+  `offset`. `Error::IO` exposes the underlying error as `source` and an optional
+  `path`.
 
 With `serde`, `VarDecl` serializes its type annotations in `lhs` and `AnonInit`
 serializes its values in `entries`. Update JSON consumers that read the former

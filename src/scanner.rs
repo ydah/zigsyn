@@ -519,8 +519,9 @@ impl Scanner {
     }
 
     fn error_at(&self, pos: usize, reason: &str) -> Error {
-        Error::Else {
+        Error::Syntax {
             path: self.path.clone(),
+            offset: pos,
             location: self.line_info(pos),
             reason: reason.to_owned(),
         }
