@@ -85,12 +85,25 @@ pub struct VarDecl {
     pub threadlocal: bool,
     pub keyword: Keyword,
     pub lhs: Vec<VarProtoOrExpr>,
-    pub ty: Option<Expression>,
     pub align: Option<Expression>,
     pub addrspace: Option<Expression>,
     pub linksection: Option<Expression>,
     pub init: Option<Expression>,
     pub tokens: Vec<Token>,
+}
+
+impl VarDecl {
+    /// Type annotation of the first declared name, if any.
+    ///
+    /// It lives in the first [`VarProtoOrExpr::VarProto`] of `lhs`; it is not
+    /// stored separately, because a second copy would duplicate everything
+    /// nested inside the type.
+    pub fn ty(&self) -> Option<&Expression> {
+        match self.lhs.first() {
+            Some(VarProtoOrExpr::VarProto { ty, .. }) => ty.as_ref(),
+            _ => None,
+        }
+    }
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -275,8 +288,17 @@ pub struct EnumLiteral {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnonInit {
     pub pos: usize,
-    pub fields: Vec<Expression>,
     pub entries: Vec<InitEntry>,
+}
+
+impl AnonInit {
+    /// The value of each entry, in source order.
+    ///
+    /// Derived from `entries` rather than stored, because a second copy would
+    /// duplicate everything nested inside the initializer.
+    pub fn fields(&self) -> impl Iterator<Item = &Expression> {
+        self.entries.iter().map(InitEntry::value)
+    }
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -298,6 +320,15 @@ pub struct ErrorSetDecl {
 pub enum InitEntry {
     Field { name: Ident, value: Expression },
     Expr(Expression),
+}
+
+impl InitEntry {
+    /// The entry's value: the expression after `.name =`, or the bare one.
+    pub fn value(&self) -> &Expression {
+        match self {
+            Self::Field { value, .. } | Self::Expr(value) => value,
+        }
+    }
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
