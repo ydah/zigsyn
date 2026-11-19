@@ -89,6 +89,7 @@ let expression = parser.expression().expect("valid Zig expression");
   `Error::Else`. Syntax and unexpected-token errors expose a zero-based byte
   `offset`. `Error::IO` exposes the underlying error as `source` and an optional
   `path`.
+- AST comments use `Arc<Comment>` so parsed ASTs can be shared across threads.
 
 With `serde`, `VarDecl` serializes its type annotations in `lhs` and `AnonInit`
 serializes its values in `entries`. Update JSON consumers that read the former

@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::ast;
 use crate::error::Error;
@@ -23,7 +23,7 @@ pub struct Parser {
     path: PathBuf,
     line_info: Vec<usize>,
     source_len: usize,
-    comments: Vec<Rc<ast::Comment>>,
+    comments: Vec<Arc<ast::Comment>>,
     depth: usize,
     suppress_curly_suffix: usize,
     scan_error: Option<Error>,
@@ -568,7 +568,7 @@ impl Parser {
 
     fn parse_container_member(
         &mut self,
-        docs: Vec<Rc<ast::Comment>>,
+        docs: Vec<Arc<ast::Comment>>,
     ) -> Result<ast::ContainerMember, Error> {
         if self.current_is_symbol(Symbol::Comma) || self.current_is_symbol(Symbol::Semicolon) {
             return Err(self.error_at(self.current_pos(), "unexpected container member separator"));
@@ -578,7 +578,7 @@ impl Parser {
 
     fn try_parse_container_member(
         &mut self,
-        docs: Vec<Rc<ast::Comment>>,
+        docs: Vec<Arc<ast::Comment>>,
     ) -> Result<ast::ContainerMember, Error> {
         if self.current_is_keyword(Keyword::Test) {
             self.reject_unattached_docs(&docs)?;
@@ -634,7 +634,7 @@ impl Parser {
 
     fn parse_test_decl(
         &mut self,
-        docs: Vec<Rc<ast::Comment>>,
+        docs: Vec<Arc<ast::Comment>>,
     ) -> Result<ast::ContainerMember, Error> {
         let mark = self.preback();
         let pos = self.current_pos();
@@ -667,7 +667,7 @@ impl Parser {
 
     fn parse_comptime_decl(
         &mut self,
-        docs: Vec<Rc<ast::Comment>>,
+        docs: Vec<Arc<ast::Comment>>,
     ) -> Result<ast::ContainerMember, Error> {
         let mark = self.preback();
         let pos = self.current_pos();
@@ -712,7 +712,7 @@ impl Parser {
         &mut self,
         mark: ParserMark,
         pos: usize,
-        docs: Vec<Rc<ast::Comment>>,
+        docs: Vec<Arc<ast::Comment>>,
         visibility: Option<Keyword>,
         modifier: Option<ast::FnModifier>,
     ) -> Result<ast::ContainerMember, Error> {
@@ -730,7 +730,7 @@ impl Parser {
     /// FnProto <- KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN ByteAlign? AddrSpace? LinkSection? CallConv? EXCLAMATIONMARK? TypeExpr
     fn parse_fn_proto(
         &mut self,
-        docs: Vec<Rc<ast::Comment>>,
+        docs: Vec<Arc<ast::Comment>>,
         visibility: Option<Keyword>,
         modifier: Option<ast::FnModifier>,
     ) -> Result<ast::FnDecl, Error> {
@@ -831,7 +831,7 @@ impl Parser {
         &mut self,
         mark: ParserMark,
         pos: usize,
-        docs: Vec<Rc<ast::Comment>>,
+        docs: Vec<Arc<ast::Comment>>,
         visibility: Option<Keyword>,
         extern_export: Option<ast::VarModifier>,
     ) -> Result<ast::ContainerMember, Error> {
@@ -886,7 +886,7 @@ impl Parser {
 
     fn parse_container_field(
         &mut self,
-        docs: Vec<Rc<ast::Comment>>,
+        docs: Vec<Arc<ast::Comment>>,
     ) -> Result<ast::ContainerMember, Error> {
         let mark = self.preback();
         let pos = self.current_pos();
@@ -928,7 +928,7 @@ impl Parser {
         })))
     }
 
-    fn collect_doc_comments(&mut self, kind: CommentKind) -> Vec<Rc<ast::Comment>> {
+    fn collect_doc_comments(&mut self, kind: CommentKind) -> Vec<Arc<ast::Comment>> {
         let mut docs = Vec::new();
         self.skip_comments();
         while matches!(self.current().map(|token| &token.token), Some(Token::Comment(actual, _)) if *actual == kind)
@@ -936,27 +936,27 @@ impl Parser {
             let comment = self
                 .take_comment()
                 .expect("documentation comment at cursor");
-            docs.push(Rc::clone(&comment));
+            docs.push(Arc::clone(&comment));
             self.comments.push(comment);
             self.skip_comments();
         }
         docs
     }
 
-    fn reject_unattached_docs(&self, docs: &[Rc<ast::Comment>]) -> Result<(), Error> {
+    fn reject_unattached_docs(&self, docs: &[Arc<ast::Comment>]) -> Result<(), Error> {
         if let Some(doc) = docs.first() {
             return Err(self.error_at(doc.pos, "unattached documentation comment"));
         }
         Ok(())
     }
 
-    fn take_comment(&mut self) -> Option<Rc<ast::Comment>> {
+    fn take_comment(&mut self) -> Option<Arc<ast::Comment>> {
         let current = self.tokens.get(self.cursor)?;
         let Token::Comment(kind, text) = &current.token else {
             return None;
         };
         self.cursor += 1;
-        Some(Rc::new(ast::Comment {
+        Some(Arc::new(ast::Comment {
             pos: current.pos,
             kind: *kind,
             text: text.clone(),
