@@ -74,15 +74,8 @@ impl Parser {
         self.check_scan_error()?;
         self.validate_token_stream()?;
 
-        let mut members = Vec::new();
         let mut container_docs = Vec::new();
-        while !self.is_eof() {
-            let docs = self.collect_comments(&mut container_docs);
-            if self.is_eof() {
-                break;
-            }
-            members.push(self.parse_container_member(docs)?);
-        }
+        let members = self.parse_container_members_until(None, &mut container_docs)?;
 
         Ok(ast::File {
             path: self.path,
@@ -900,7 +893,9 @@ impl Parser {
         } else {
             None
         };
-        self.consume_symbol(Symbol::Comma);
+        if self.current().is_some() && !self.current_is_symbol(Symbol::RBrace) {
+            self.expect_symbol(Symbol::Comma)?;
+        }
         let tokens = self.tokens_since(mark);
         Ok(ast::ContainerMember::Field(Box::new(ast::ContainerField {
             pos,
@@ -1707,7 +1702,9 @@ impl Parser {
                 break;
             }
             names.push(self.expect_ident(self.current_pos())?);
-            self.consume_symbol(Symbol::Comma);
+            if !self.consume_symbol(Symbol::Comma) {
+                break;
+            }
         }
         self.expect_symbol(Symbol::RBrace)?;
         Ok(ast::Expression::ErrorSetDecl(ast::ErrorSetDecl {
@@ -1772,7 +1769,7 @@ impl Parser {
             None
         };
         self.expect_symbol(Symbol::LBrace)?;
-        let members = self.parse_container_members_until(Symbol::RBrace)?;
+        let members = self.parse_container_members_until(Some(Symbol::RBrace), &mut Vec::new())?;
         self.expect_symbol(Symbol::RBrace)?;
         let tokens = self.tokens_since(mark);
         Ok(ast::Expression::Container(ast::ContainerDecl {
@@ -1787,19 +1784,34 @@ impl Parser {
 
     fn parse_container_members_until(
         &mut self,
-        end: Symbol,
+        end: Option<Symbol>,
+        container_docs: &mut Vec<Rc<ast::Comment>>,
     ) -> Result<Vec<ast::ContainerMember>, Error> {
         let mut members = Vec::new();
-        let mut container_docs = Vec::new();
-        while !self.current_is_symbol(end) {
-            if self.is_eof() {
-                return Err(self.unexpected(vec![TokenKind::Symbol(end)], None));
-            }
-            let docs = self.collect_comments(&mut container_docs);
-            if self.current_is_symbol(end) {
+        let mut fields_closed = false;
+        loop {
+            let docs = self.collect_comments(container_docs);
+            if end.is_some_and(|symbol| self.current_is_symbol(symbol)) {
                 break;
             }
-            members.push(self.parse_container_member(docs)?);
+            if self.is_eof() {
+                if let Some(symbol) = end {
+                    return Err(self.unexpected(vec![TokenKind::Symbol(symbol)], None));
+                }
+                break;
+            }
+            let member = self.parse_container_member(docs)?;
+            if let ast::ContainerMember::Field(field) = &member {
+                if fields_closed {
+                    return Err(self.error_at(
+                        field.pos,
+                        "declarations are not allowed between container fields",
+                    ));
+                }
+            } else if matches!(members.last(), Some(ast::ContainerMember::Field(_))) {
+                fields_closed = true;
+            }
+            members.push(member);
         }
         Ok(members)
     }
@@ -2004,7 +2016,9 @@ impl Parser {
             }
             prongs.push(self.parse_switch_prong()?);
             self.skip_comments();
-            self.consume_symbol(Symbol::Comma);
+            if !self.consume_symbol(Symbol::Comma) {
+                break;
+            }
         }
         self.expect_symbol(Symbol::RBrace)?;
         let tokens = self.tokens_since(mark);
@@ -2734,6 +2748,34 @@ test "basic" {}
             "pub const bad = @import;",
         ] {
             assert!(parse_source(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn requires_list_commas_and_contiguous_container_fields() {
+        let invalid = [
+            "a: u8 b: u8",
+            "a: u8, const middle = 1; b: u8,",
+            "const S = struct { a: u8 b: u8 };",
+            "const S = struct { a: u8, const middle = 1; b: u8, };",
+            "const E = error{ A B };",
+            "const S = switch (tag) { 1 => 1 else => 2 };",
+        ];
+        let accepted: Vec<_> = invalid
+            .into_iter()
+            .filter(|source| parse_source(source).is_ok())
+            .collect();
+        assert!(accepted.is_empty(), "accepted invalid syntax: {accepted:?}");
+
+        for source in [
+            "a: u8",
+            "const first = 1; a: u8, const last = 2;",
+            "const S = struct { a: u8, const last = 2; };",
+            "const S = struct { a: u8 };",
+            "const E = error{ A, B };",
+            "const S = switch (tag) { 1 => 1, else => 2 };",
+        ] {
+            parse_source(source).unwrap_or_else(|err| panic!("{source}: {err}"));
         }
     }
 
