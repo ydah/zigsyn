@@ -116,6 +116,10 @@ impl Parser {
     }
 
     fn try_parse_statement(&mut self) -> Result<ast::Statement, Error> {
+        self.with_depth(Self::parse_statement_inner)
+    }
+
+    fn parse_statement_inner(&mut self) -> Result<ast::Statement, Error> {
         if self.current_is_symbol(Symbol::LBrace) {
             return Ok(ast::Statement::Block(Box::new(self.parse_block()?)));
         }
@@ -1051,7 +1055,10 @@ impl Parser {
     /// Expr <- BoolOrExpr
     fn parse_expr_bp(&mut self, min_bp: u8) -> Result<ast::Expression, Error> {
         self.skip_comments();
-        self.enter_depth()?;
+        self.with_depth(|parser| parser.parse_expr_bp_inner(min_bp))
+    }
+
+    fn parse_expr_bp_inner(&mut self, min_bp: u8) -> Result<ast::Expression, Error> {
         let mut lhs = self.parse_prefix_expr()?;
 
         loop {
@@ -1099,7 +1106,6 @@ impl Parser {
             });
         }
 
-        self.leave_depth();
         Ok(lhs)
     }
 
@@ -1113,7 +1119,7 @@ impl Parser {
             let pos = self.current_pos();
             self.cursor += 1;
             self.expect_symbol(Symbol::MinusRArrow)?;
-            let result = self.parse_prefix_expr()?;
+            let result = self.with_depth(Self::parse_prefix_expr)?;
             return Ok(ast::Expression::AnyframeType(ast::AnyframeType {
                 pos,
                 result: Some(Box::new(result)),
@@ -1123,7 +1129,7 @@ impl Parser {
         if self.current_is_symbol(Symbol::QuestionMark) {
             let pos = self.current_pos();
             self.cursor += 1;
-            let child = self.parse_prefix_expr()?;
+            let child = self.with_depth(Self::parse_prefix_expr)?;
             return Ok(ast::Expression::Optional(ast::OptionalType {
                 pos,
                 child: Box::new(child),
@@ -1137,7 +1143,7 @@ impl Parser {
         if self.current_is_prefix_op() {
             let pos = self.current_pos();
             let op = self.bump_token().expect("current token exists");
-            let expr = self.parse_prefix_expr()?;
+            let expr = self.with_depth(Self::parse_prefix_expr)?;
             return Ok(ast::Expression::Unary(ast::UnaryOp {
                 pos,
                 op,
@@ -1194,7 +1200,7 @@ impl Parser {
             kind
         };
         let modifiers = self.parse_pointer_modifiers()?;
-        let child = self.parse_prefix_expr()?;
+        let child = self.with_depth(Self::parse_prefix_expr)?;
         let tokens = self.tokens_since(mark);
         Ok(ast::Expression::Pointer(ast::PointerType {
             pos,
@@ -1216,7 +1222,7 @@ impl Parser {
         };
         self.expect_symbol(Symbol::RBracket)?;
         let modifiers = self.parse_pointer_modifiers()?;
-        let child = self.parse_prefix_expr()?;
+        let child = self.with_depth(Self::parse_prefix_expr)?;
         let tokens = self.tokens_since(mark);
         Ok(ast::Expression::SliceType(ast::SliceType {
             pos,
@@ -1238,7 +1244,7 @@ impl Parser {
             None
         };
         self.expect_symbol(Symbol::RBracket)?;
-        let child = self.parse_prefix_expr()?;
+        let child = self.with_depth(Self::parse_prefix_expr)?;
         let tokens = self.tokens_since(mark);
         Ok(ast::Expression::ArrayType(ast::ArrayType {
             pos,
@@ -1364,7 +1370,7 @@ impl Parser {
         if self.current_is_symbol(Symbol::ExclamationMark) {
             let pos = self.current_pos();
             self.cursor += 1;
-            let payload = self.parse_prefix_expr()?;
+            let payload = self.with_depth(Self::parse_prefix_expr)?;
             expr = ast::Expression::ErrorUnion(ast::ErrorUnionType {
                 pos,
                 error: Box::new(expr),
@@ -2516,16 +2522,17 @@ impl Parser {
         self.cursor >= self.tokens.len()
     }
 
-    fn enter_depth(&mut self) -> Result<(), Error> {
-        self.depth += 1;
-        if self.depth > MAX_DEPTH {
+    fn with_depth<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        if self.depth >= MAX_DEPTH {
             return Err(self.error_at(self.current_pos(), "parser recursion depth exceeded"));
         }
-        Ok(())
-    }
-
-    fn leave_depth(&mut self) {
-        self.depth = self.depth.saturating_sub(1);
+        self.depth += 1;
+        let result = parse(self);
+        self.depth -= 1;
+        result
     }
 
     pub fn preback(&self) -> ParserMark {
@@ -2706,6 +2713,41 @@ test "basic" {}
         let source = "(".repeat(1100) + "x" + &")".repeat(1100);
         let mut parser = Parser::from(source);
         assert!(parser.expression().is_err());
+    }
+
+    #[test]
+    fn expression_depth_guard_counts_prefix_operands() {
+        for source in ["!flag", "?u8", "[]u8", "*u8", "anyframe->u8", "E!u8"] {
+            let mut parser = Parser::from(source);
+            parser.depth = MAX_DEPTH - 1;
+            assert!(
+                matches!(
+                    parser.expression(),
+                    Err(Error::Else { reason, .. }) if reason == "parser recursion depth exceeded"
+                ),
+                "{source}"
+            );
+            assert_eq!(parser.depth, MAX_DEPTH - 1);
+        }
+    }
+
+    #[test]
+    fn statement_depth_guard_counts_nested_statements() {
+        let mut parser = Parser::from("if (a) {} else if (b) {}");
+        parser.depth = MAX_DEPTH - 2;
+        let mark = parser.preback();
+        assert!(matches!(
+            parser.parse_statement(),
+            Err(Error::Else { reason, .. }) if reason == "parser recursion depth exceeded"
+        ));
+        assert_eq!(parser.preback(), mark);
+    }
+
+    #[test]
+    fn expression_depth_guard_restores_depth_on_parse_error() {
+        let mut parser = Parser::from("x +");
+        assert!(parser.expression().is_err());
+        assert_eq!(parser.depth, 0);
     }
 
     #[test]
