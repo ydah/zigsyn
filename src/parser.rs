@@ -1823,7 +1823,7 @@ impl Parser {
             None
         };
         self.expect_symbol(Symbol::LBrace)?;
-        self.collect_doc_comments(CommentKind::ContainerDoc);
+        let container_docs = self.collect_doc_comments(CommentKind::ContainerDoc);
         let members = self.parse_container_members_until(Some(Symbol::RBrace))?;
         self.expect_symbol(Symbol::RBrace)?;
         let tokens = self.tokens_since(mark);
@@ -1834,6 +1834,7 @@ impl Parser {
             arg,
             members,
             tokens,
+            container_docs,
         }))
     }
 
@@ -2760,6 +2761,37 @@ test "basic" {}
         assert!(matches!(file.members[0], ast::ContainerMember::Var(_)));
         assert!(matches!(file.members[1], ast::ContainerMember::Fn(_)));
         assert!(matches!(file.members[2], ast::ContainerMember::Test(_)));
+    }
+
+    #[test]
+    fn nested_container_docs_belong_to_their_container() {
+        let file = parse_source(
+            r#"//! file
+const A = struct {
+    //! outer
+    const B = struct {
+        //! inner
+        value: u8,
+    };
+};"#,
+        )
+        .unwrap();
+        let ast::ContainerMember::Var(a) = &file.members[0] else {
+            panic!("expected A declaration");
+        };
+        let Some(ast::Expression::Container(outer)) = &a.init else {
+            panic!("expected outer container");
+        };
+        let ast::ContainerMember::Var(b) = &outer.members[0] else {
+            panic!("expected B declaration");
+        };
+        let Some(ast::Expression::Container(inner)) = &b.init else {
+            panic!("expected inner container");
+        };
+        assert_eq!(file.container_docs[0].text, "//! file");
+        assert_eq!(outer.container_docs[0].text, "//! outer");
+        assert_eq!(inner.container_docs[0].text, "//! inner");
+        assert_eq!(file.comments.len(), 3);
     }
 
     #[test]
