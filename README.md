@@ -24,14 +24,14 @@ Add `zigsyn` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-zigsyn = "0.1"
+zigsyn = "0.2"
 ```
 
 To enable serialization support:
 
 ```toml
 [dependencies]
-zigsyn = { version = "0.1", features = ["serde"] }
+zigsyn = { version = "0.2", features = ["serde"] }
 ```
 
 If you are using this repository directly:
