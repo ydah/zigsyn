@@ -13,6 +13,7 @@ pub struct ParserMark {
     cursor: usize,
     depth: usize,
     suppress_curly_suffix: usize,
+    comment_count: usize,
 }
 
 #[derive(Debug)]
@@ -627,7 +628,7 @@ impl Parser {
         let name = match self.current().cloned().map(|token| token.token) {
             Some(Token::Literal(LitKind::String, text)) => {
                 let pos = self.current_pos();
-                self.cursor += 1;
+                self.advance();
                 Some(ast::Expression::BasicLit(ast::BasicLit {
                     pos,
                     kind: LitKind::String,
@@ -677,7 +678,7 @@ impl Parser {
             let abi = match self.current().map(|token| &token.token) {
                 Some(Token::Literal(LitKind::String, text)) => {
                     let text = text.clone();
-                    self.cursor += 1;
+                    self.advance();
                     Some(text)
                 }
                 _ => None,
@@ -921,26 +922,28 @@ impl Parser {
         container_docs: &mut Vec<Rc<ast::Comment>>,
     ) -> Vec<Rc<ast::Comment>> {
         let mut docs = Vec::new();
-        loop {
-            let Some(current) = self.current() else {
-                return docs;
-            };
-            let Token::Comment(kind, text) = &current.token else {
-                return docs;
-            };
-            let comment = Rc::new(ast::Comment {
-                pos: current.pos,
-                kind: *kind,
-                text: text.clone(),
-            });
-            if *kind == CommentKind::Doc {
+        while let Some(comment) = self.take_comment() {
+            if comment.kind == CommentKind::Doc {
                 docs.push(Rc::clone(&comment));
-            } else if *kind == CommentKind::ContainerDoc {
+            } else if comment.kind == CommentKind::ContainerDoc {
                 container_docs.push(Rc::clone(&comment));
             }
             self.comments.push(comment);
-            self.cursor += 1;
         }
+        docs
+    }
+
+    fn take_comment(&mut self) -> Option<Rc<ast::Comment>> {
+        let current = self.tokens.get(self.cursor)?;
+        let Token::Comment(kind, text) = &current.token else {
+            return None;
+        };
+        self.cursor += 1;
+        Some(Rc::new(ast::Comment {
+            pos: current.pos,
+            kind: *kind,
+            text: text.clone(),
+        }))
     }
 
     fn skip_comments(&mut self) {
@@ -1072,7 +1075,7 @@ impl Parser {
             }
 
             let op_pos = self.current_pos();
-            self.cursor += 1;
+            self.advance();
 
             if op == Token::Keyword(Keyword::Catch) {
                 let payload = self.parse_optional_payload()?;
@@ -1117,7 +1120,7 @@ impl Parser {
                 .is_some_and(|token| matches!(token.token, Token::Symbol(Symbol::MinusRArrow)))
         {
             let pos = self.current_pos();
-            self.cursor += 1;
+            self.advance();
             self.expect_symbol(Symbol::MinusRArrow)?;
             let result = self.parse_type_prefix_operand()?;
             ast::Expression::AnyframeType(ast::AnyframeType {
@@ -1126,7 +1129,7 @@ impl Parser {
             })
         } else if self.current_is_symbol(Symbol::QuestionMark) {
             let pos = self.current_pos();
-            self.cursor += 1;
+            self.advance();
             let child = self.parse_type_prefix_operand()?;
             ast::Expression::Optional(ast::OptionalType {
                 pos,
@@ -1323,7 +1326,7 @@ impl Parser {
 
             if self.current_is_symbol(Symbol::DotAsterisk) {
                 let pos = self.current_pos();
-                self.cursor += 1;
+                self.advance();
                 expr = ast::Expression::Deref(ast::Deref {
                     pos,
                     expr: Box::new(expr),
@@ -1333,7 +1336,7 @@ impl Parser {
 
             if self.current_is_symbol(Symbol::DotQuestionMark) {
                 let pos = self.current_pos();
-                self.cursor += 1;
+                self.advance();
                 expr = ast::Expression::Unwrap(ast::Unwrap {
                     pos,
                     expr: Box::new(expr),
@@ -1347,7 +1350,7 @@ impl Parser {
                     .is_some_and(|token| matches!(token.token, Token::Literal(LitKind::Ident, _)))
             {
                 let pos = self.current_pos();
-                self.cursor += 1;
+                self.advance();
                 let field_pos = self.current_pos();
                 let field = self.expect_ident(field_pos)?;
                 expr = ast::Expression::FieldAccess(ast::FieldAccess {
@@ -1385,7 +1388,7 @@ impl Parser {
 
         if self.current_is_symbol(Symbol::ExclamationMark) {
             let pos = self.current_pos();
-            self.cursor += 1;
+            self.advance();
             let payload = self.with_depth(|parser| parser.parse_prefix_expr(allow_initializer))?;
             expr = ast::Expression::ErrorUnion(ast::ErrorUnionType {
                 pos,
@@ -1487,7 +1490,7 @@ impl Parser {
                         return Ok(ast::Expression::Block(block));
                     }
                     if self.current_is_keyword(Keyword::Inline) {
-                        self.cursor += 1;
+                        self.advance();
                         if self.current_is_keyword(Keyword::While) {
                             return self.parse_while_expr(Some(label), true);
                         }
@@ -1524,14 +1527,14 @@ impl Parser {
                         self.current().map(|token| token.token.clone()),
                     ));
                 }
-                self.cursor += 1;
+                self.advance();
                 Ok(ast::Expression::Ident(ast::Ident {
                     pos: current.pos,
                     name,
                 }))
             }
             Token::Literal(LitKind::BuiltinIdent, name) => {
-                self.cursor += 1;
+                self.advance();
                 let args = self.parse_delimited_exprs(Symbol::LParen, Symbol::RParen)?;
                 Ok(ast::Expression::BuiltinCall(ast::BuiltinCall {
                     pos: current.pos,
@@ -1545,7 +1548,7 @@ impl Parser {
                     LitKind::Integer | LitKind::Float | LitKind::Char | LitKind::String
                 ) =>
             {
-                self.cursor += 1;
+                self.advance();
                 Ok(ast::Expression::BasicLit(ast::BasicLit {
                     pos: current.pos,
                     kind,
@@ -1553,18 +1556,18 @@ impl Parser {
                 }))
             }
             Token::Literal(LitKind::MultilineString, text) => {
-                self.cursor += 1;
+                self.advance();
                 Ok(ast::Expression::MultilineStr(ast::MultilineStr {
                     pos: current.pos,
                     text,
                 }))
             }
             Token::Keyword(Keyword::Unreachable) => {
-                self.cursor += 1;
+                self.advance();
                 Ok(ast::Expression::Unreachable(current.pos))
             }
             Token::Keyword(Keyword::Anyframe) => {
-                self.cursor += 1;
+                self.advance();
                 Ok(ast::Expression::AnyframeType(ast::AnyframeType {
                     pos: current.pos,
                     result: None,
@@ -1584,13 +1587,13 @@ impl Parser {
                 | Keyword::Opaque,
             ) => self.parse_container_decl_expr(),
             Token::Symbol(Symbol::LParen) => {
-                self.cursor += 1;
+                self.advance();
                 let expr = self.parse_expr_bp(0)?;
                 self.expect_symbol(Symbol::RParen)?;
                 Ok(ast::Expression::Grouped(Box::new(expr)))
             }
             Token::Symbol(Symbol::Dot) => {
-                self.cursor += 1;
+                self.advance();
                 if self.current_is_symbol(Symbol::LBrace) {
                     let entries = self.parse_init_list()?;
                     return Ok(ast::Expression::AnonInit(ast::AnonInit {
@@ -1605,17 +1608,17 @@ impl Parser {
                 }))
             }
             Token::Keyword(Keyword::Comptime) => {
-                self.cursor += 1;
+                self.advance();
                 let expr = self.parse_expr_bp(0)?;
                 Ok(ast::Expression::Comptime(Box::new(expr)))
             }
             Token::Keyword(Keyword::Nosuspend) => {
-                self.cursor += 1;
+                self.advance();
                 let expr = self.parse_expr_bp(0)?;
                 Ok(ast::Expression::Nosuspend(Box::new(expr)))
             }
             Token::Keyword(Keyword::Resume) => {
-                self.cursor += 1;
+                self.advance();
                 let expr = self.parse_expr_bp(0)?;
                 Ok(ast::Expression::Resume(Box::new(expr)))
             }
@@ -1627,7 +1630,7 @@ impl Parser {
                 Ok(ast::Expression::Switch(switch))
             }
             Token::Keyword(Keyword::Inline) => {
-                self.cursor += 1;
+                self.advance();
                 if self.current_is_keyword(Keyword::While) {
                     self.parse_while_expr(None, true)
                 } else if self.current_is_keyword(Keyword::For) {
@@ -1644,7 +1647,7 @@ impl Parser {
             }
             Token::Keyword(Keyword::Asm) => self.parse_asm_expr(),
             Token::Keyword(Keyword::Return) => {
-                self.cursor += 1;
+                self.advance();
                 let value = if self.current_stops_optional_expr() {
                     None
                 } else {
@@ -1656,7 +1659,7 @@ impl Parser {
                 }))
             }
             Token::Keyword(Keyword::Break) => {
-                self.cursor += 1;
+                self.advance();
                 let label = self.parse_optional_break_label()?;
                 let value = if self.current_stops_optional_expr() {
                     None
@@ -1670,7 +1673,7 @@ impl Parser {
                 }))
             }
             Token::Keyword(Keyword::Continue) => {
-                self.cursor += 1;
+                self.advance();
                 let label = self.parse_optional_break_label()?;
                 let value = if self.current_stops_optional_expr() {
                     None
@@ -1732,7 +1735,7 @@ impl Parser {
                 keyword @ (Keyword::Struct | Keyword::Enum | Keyword::Union | Keyword::Opaque),
             )) => {
                 let keyword = *keyword;
-                self.cursor += 1;
+                self.advance();
                 keyword
             }
             _ => {
@@ -2162,7 +2165,7 @@ impl Parser {
         };
         match token.token {
             Token::Literal(LitKind::String, text) => {
-                self.cursor += 1;
+                self.advance();
                 Ok(ast::Expression::BasicLit(ast::BasicLit {
                     pos: token.pos,
                     kind: LitKind::String,
@@ -2190,7 +2193,7 @@ impl Parser {
             }
             args.push(self.parse_expr_bp(0)?);
             if self.current_is_symbol(Symbol::Comma) {
-                self.cursor += 1;
+                self.advance();
                 if self.current_is_symbol(close) {
                     break;
                 }
@@ -2210,14 +2213,14 @@ impl Parser {
             return Ok(None);
         }
         let pos = self.current_pos();
-        self.cursor += 1;
+        self.advance();
         let mut stars = Vec::new();
         let star = self.consume_symbol(Symbol::Asterisk);
         stars.push(star);
         let mut names = Vec::new();
         names.push(self.expect_ident(self.current_pos())?);
         while self.current_is_symbol(Symbol::Comma) {
-            self.cursor += 1;
+            self.advance();
             if self.current_is_symbol(Symbol::Pipe) {
                 break;
             }
@@ -2367,7 +2370,22 @@ impl Parser {
     }
 
     fn current(&self) -> Option<&SpannedToken> {
-        self.tokens.get(self.cursor)
+        self.tokens
+            .get(self.cursor..)?
+            .iter()
+            .find(|token| !matches!(token.token, Token::Comment(CommentKind::Line, _)))
+    }
+
+    fn advance(&mut self) {
+        while self
+            .tokens
+            .get(self.cursor)
+            .is_some_and(|token| matches!(token.token, Token::Comment(CommentKind::Line, _)))
+        {
+            let comment = self.take_comment().expect("line comment at cursor");
+            self.comments.push(comment);
+        }
+        self.cursor += 1;
     }
 
     fn check_scan_error(&mut self) -> Result<(), Error> {
@@ -2413,25 +2431,24 @@ impl Parser {
     }
 
     fn current_stops_optional_expr(&self) -> bool {
-        self.is_eof()
-            || matches!(
-                self.current().map(|token| &token.token),
-                Some(Token::Keyword(
-                    Keyword::Catch | Keyword::Else | Keyword::Orelse
-                )) | Some(Token::Symbol(
-                    Symbol::Semicolon
-                        | Symbol::Comma
-                        | Symbol::RParen
-                        | Symbol::RBracket
-                        | Symbol::RBrace
-                        | Symbol::EqualRArrow
-                ))
-            )
+        matches!(
+            self.current().map(|token| &token.token),
+            None | Some(Token::Keyword(
+                Keyword::Catch | Keyword::Else | Keyword::Orelse
+            )) | Some(Token::Symbol(
+                Symbol::Semicolon
+                    | Symbol::Comma
+                    | Symbol::RParen
+                    | Symbol::RBracket
+                    | Symbol::RBrace
+                    | Symbol::EqualRArrow
+            ))
+        )
     }
 
     fn consume_symbol(&mut self, symbol: Symbol) -> bool {
         if self.current_is_symbol(symbol) {
-            self.cursor += 1;
+            self.advance();
             true
         } else {
             false
@@ -2440,7 +2457,7 @@ impl Parser {
 
     fn consume_keyword(&mut self, keyword: Keyword) -> bool {
         if self.current_is_keyword(keyword) {
-            self.cursor += 1;
+            self.advance();
             true
         } else {
             false
@@ -2450,7 +2467,7 @@ impl Parser {
     fn consume_ident_text(&mut self, expected: &str) -> bool {
         match self.current().map(|token| &token.token) {
             Some(Token::Literal(LitKind::Ident, text)) if text == expected => {
-                self.cursor += 1;
+                self.advance();
                 true
             }
             _ => false,
@@ -2477,7 +2494,7 @@ impl Parser {
 
     fn bump_token(&mut self) -> Option<Token> {
         let token = self.current()?.token.clone();
-        self.cursor += 1;
+        self.advance();
         Some(token)
     }
 
@@ -2498,7 +2515,7 @@ impl Parser {
     fn expect_symbol(&mut self, symbol: Symbol) -> Result<(), Error> {
         match self.current() {
             Some(token) if token.token == Token::Symbol(symbol) => {
-                self.cursor += 1;
+                self.advance();
                 Ok(())
             }
             Some(token) => {
@@ -2511,7 +2528,7 @@ impl Parser {
     fn expect_keyword(&mut self, keyword: Keyword) -> Result<(), Error> {
         match self.current() {
             Some(token) if token.token == Token::Keyword(keyword) => {
-                self.cursor += 1;
+                self.advance();
                 Ok(())
             }
             Some(token) => {
@@ -2527,7 +2544,7 @@ impl Parser {
         };
         match token.token {
             Token::Literal(LitKind::Ident, name) => {
-                self.cursor += 1;
+                self.advance();
                 Ok(ast::Ident { pos, name })
             }
             actual => Err(self.unexpected(vec![TokenKind::Literal(LitKind::Ident)], Some(actual))),
@@ -2556,6 +2573,7 @@ impl Parser {
             cursor: self.cursor,
             depth: self.depth,
             suppress_curly_suffix: self.suppress_curly_suffix,
+            comment_count: self.comments.len(),
         }
     }
 
@@ -2563,6 +2581,7 @@ impl Parser {
         self.cursor = mark.cursor;
         self.depth = mark.depth;
         self.suppress_curly_suffix = mark.suppress_curly_suffix;
+        self.comments.truncate(mark.comment_count);
     }
 
     fn tokens_since(&self, mark: ParserMark) -> Vec<Token> {
@@ -2910,6 +2929,43 @@ pub fn add(a: u32, comptime b: anytype) u32 {
             &switch_expr.prongs[0].body,
             ast::Expression::Assign(_)
         ));
+    }
+
+    #[test]
+    fn preserves_line_comments_before_postfix_operators() {
+        let file = parse_source("const x = map.get(k) // lookup\n.?; // trailing").unwrap();
+        let ast::ContainerMember::Var(var) = &file.members[0] else {
+            panic!("expected variable declaration");
+        };
+        assert!(matches!(var.init, Some(ast::Expression::Unwrap(_))));
+        assert_eq!(file.comments.len(), 2);
+        assert!(var
+            .tokens
+            .iter()
+            .any(|token| matches!(token, Token::Comment(CommentKind::Line, _))));
+    }
+
+    #[test]
+    fn line_comments_keep_else_if_as_a_statement() {
+        let mut parser = Parser::from("if (a) {} else // branch\nif (b) x = 1;");
+        let ast::Statement::If(outer) = parser.parse_statement().unwrap() else {
+            panic!("expected if statement");
+        };
+        assert!(matches!(
+            outer.else_branch.as_deref(),
+            Some(ast::Statement::If(_))
+        ));
+    }
+
+    #[test]
+    fn accepts_line_comments_between_asm_sections() {
+        let mut parser =
+            Parser::from("asm (\"nop\" : [out] \"=r\" (-> usize) // output\n : [in] \"r\" (x))");
+        let ast::Expression::Asm(expr) = parser.expression().unwrap() else {
+            panic!("expected asm expression");
+        };
+        assert_eq!(expr.outputs.len(), 1);
+        assert_eq!(expr.inputs.len(), 1);
     }
 
     #[test]
