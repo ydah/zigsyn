@@ -19,4 +19,28 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Install Zig 0.17.1 for standard library tests
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          package=zig-x86_64-linux-0.17.1
+          archive="$RUNNER_TEMP/$package.tar.xz"
+          curl --fail --location --retry 3 --output "$archive" "https://ziglang.org/download/0.17.1/$package.tar.xz"
+          printf '%s  %s\n' 3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a "$archive" | sha256sum --check -
+          tar -xJf "$archive" -C "$RUNNER_TEMP"
+          printf '%s\n' "ZIG_SRC_DIR=$RUNNER_TEMP/$package" "ZIG_BIN=$RUNNER_TEMP/$package/zig" >> "$GITHUB_ENV"
       - run: cargo test --all-features
+
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Run the parser fuzz smoke test
+        run: |
+          corpus="$RUNNER_TEMP/parse-source-corpus"
+          mkdir "$corpus"
+          cp tests/testdata/*.zig "$corpus/"
+          cargo fuzz run parse_source "$corpus" -- -runs=1024 -max_len=256 -seed=1 -timeout=2

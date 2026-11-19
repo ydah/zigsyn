@@ -132,6 +132,14 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 ```
 
+To run the Zig standard library tests locally, set `ZIG_SRC_DIR` to a source
+tree or distribution containing `lib/std/std.zig` and `ZIG_BIN` to its Zig
+executable. CI uses Zig 0.17.1 on Linux.
+
+```sh
+ZIG_SRC_DIR=/path/to/zig ZIG_BIN=/path/to/zig/zig cargo test --test differential --test walkdir
+```
+
 Run benchmarks:
 
 ```sh

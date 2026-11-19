@@ -1,13 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 fn parser_benchmark(c: &mut Criterion) {
-    let source = r#"
-//! docs
-pub fn main() void {
-    const answer: u32 = 42;
-    _ = @import("std");
-}
-"#;
+    let source = include_str!("testdata/events.zig");
 
     c.bench_function("parser", |b| {
         b.iter(|| {
