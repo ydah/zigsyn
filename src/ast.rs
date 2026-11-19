@@ -93,11 +93,10 @@ pub struct VarDecl {
 }
 
 impl VarDecl {
-    /// Type annotation of the first declared name, if any.
+    /// Type annotation on the first left-hand side entry, if any.
     ///
-    /// It lives in the first [`VarProtoOrExpr::VarProto`] of `lhs`; it is not
-    /// stored separately, because a second copy would duplicate everything
-    /// nested inside the type.
+    /// In a destructuring declaration that begins with an assignment target,
+    /// this returns `None` even when a later declaration has a type annotation.
     pub fn ty(&self) -> Option<&Expression> {
         match self.lhs.first() {
             Some(VarProtoOrExpr::VarProto { ty, .. }) => ty.as_ref(),

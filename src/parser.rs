@@ -2890,24 +2890,32 @@ pub fn f() void {
 
     #[test]
     fn anon_init_fields_are_the_entry_values() {
-        let mut parser = Parser::from(".{ .a = x, y }");
-        let ast::Expression::AnonInit(init) = parser.expression().unwrap() else {
-            panic!("expected anonymous initializer");
-        };
-        let names: Vec<_> = init
-            .fields()
-            .map(|field| match field {
-                ast::Expression::Ident(ident) => ident.name.as_str(),
-                other => panic!("unexpected field {other:?}"),
-            })
-            .collect();
-        assert_eq!(names, ["x", "y"]);
+        for source in [".{ .a = x, .b = y }", ".{ x, y }"] {
+            let ast::Expression::AnonInit(init) = Parser::from(source).expression().unwrap() else {
+                panic!("expected anonymous initializer in {source}");
+            };
+            let names: Vec<_> = init
+                .fields()
+                .map(|field| match field {
+                    ast::Expression::Ident(ident) => ident.name.as_str(),
+                    other => panic!("unexpected field {other:?}"),
+                })
+                .collect();
+            assert_eq!(names, ["x", "y"], "{source}");
+        }
     }
 
     #[test]
-    fn var_decl_ty_is_the_first_prototype_type() {
+    fn var_decl_ty_uses_the_first_lhs_entry() {
         let file = parse_source(
-            "const a: u8 = 1;\nconst b = 2;\nfn f() void { var c: u16, var d: u32 = g(); }",
+            "const a: u8 = 1;
+             const b = 2;
+             fn f() void {
+                 var c: u16, const d: u32 = .{ 3, 4 };
+                 c, const e: u64 = .{ 5, 6 };
+                 _ = d;
+                 _ = e;
+             }",
         )
         .unwrap();
         let ty_name = |var: &ast::VarDecl| match var.ty() {
@@ -2926,9 +2934,17 @@ pub fn f() void {
         let ast::ContainerMember::Fn(f) = &file.members[2] else {
             panic!("expected fn");
         };
-        let ast::Statement::Var(c) = &f.body.as_ref().unwrap().statements[0] else {
-            panic!("expected var statement");
+        let [ast::Statement::Var(c), ast::Statement::Var(assignment_first), ..] =
+            f.body.as_ref().unwrap().statements.as_slice()
+        else {
+            panic!("expected two destructuring declarations");
         };
         assert_eq!(ty_name(c).as_deref(), Some("u16"));
+        assert!(assignment_first.ty().is_none());
+        assert!(matches!(
+            &assignment_first.lhs[1],
+            ast::VarProtoOrExpr::VarProto { ty: Some(ast::Expression::Ident(ty)), .. }
+                if ty.name == "u64"
+        ));
     }
 }
