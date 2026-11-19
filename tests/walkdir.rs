@@ -1,15 +1,22 @@
-use std::path::Path;
+use std::io::{self, Write};
+use std::path::PathBuf;
 
 #[test]
 fn parses_zig_stdlib_when_configured() {
-    let Ok(src_dir) = std::env::var("ZIG_SRC_DIR") else {
+    let Some(src_dir) = std::env::var_os("ZIG_SRC_DIR") else {
+        let _ = writeln!(
+            io::stderr(),
+            "Skipping Zig standard library walk, set ZIG_SRC_DIR to enable it"
+        );
         return;
     };
 
-    let std_dir = Path::new(&src_dir).join("lib/std");
-    if !std_dir.exists() {
-        return;
-    }
+    let std_dir = PathBuf::from(src_dir).join("lib/std");
+    assert!(
+        std_dir.join("std.zig").is_file(),
+        "ZIG_SRC_DIR must contain lib/std/std.zig, missing under {}",
+        std_dir.display()
+    );
 
     let mut stack = vec![std_dir];
     while let Some(dir) = stack.pop() {
