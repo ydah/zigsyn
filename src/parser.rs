@@ -273,6 +273,9 @@ impl Parser {
         let pos = self.current_pos();
         let expr = self.parse_assign_expr()?;
         let semicolon = self.consume_symbol(Symbol::Semicolon);
+        if semicolon && self.current_is_keyword(Keyword::Else) {
+            return Err(self.error_at(self.current_pos(), "unexpected 'else' after a semicolon"));
+        }
         let tokens = self.tokens_since(mark);
         Ok((
             ast::Statement::Expr(Box::new(ast::ExprStmt {
@@ -2949,6 +2952,18 @@ pub fn add(a: u32, comptime b: anytype) u32 {
             &switch_expr.prongs[0].body,
             ast::Expression::Assign(_)
         ));
+    }
+
+    #[test]
+    fn rejects_semicolons_before_control_statement_else() {
+        for source in [
+            "if (a) b(); else c();",
+            "while (a) b(); else c();",
+            "for (items) |_| b(); else c();",
+        ] {
+            let mut parser = Parser::from(source);
+            assert!(parser.parse_statement().is_err(), "{source}");
+        }
     }
 
     #[test]
