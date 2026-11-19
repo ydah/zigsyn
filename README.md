@@ -91,6 +91,10 @@ let expression = parser.expression().expect("valid Zig expression");
   `offset`. `Error::IO` exposes the underlying error as `source` and an optional
   `path`.
 - AST comments use `Arc<Comment>` so parsed ASTs can be shared across threads.
+- AST token lists use `zigsyn::token::TokenSpan`, an immutable slice of the
+  parser's shared token buffer. Read the tokens with `tokens.as_slice()`, or
+  convert a `Vec<Token>` with `.into()` when constructing nodes. With `serde`,
+  each token list is serialized and deserialized as an array.
 
 With `serde`, `VarDecl` serializes its type annotations in `lhs` and `AnonInit`
 serializes its values in `entries`. Update JSON consumers that read the former

@@ -1,13 +1,13 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::ast;
 use crate::error::Error;
 use crate::scanner::{Scanner, SpannedToken};
-use crate::token::{CommentKind, Keyword, LitKind, Symbol, Token, TokenKind};
+use crate::token::{CommentKind, Keyword, LitKind, Symbol, Token, TokenKind, TokenSpan};
 
 const MAX_DEPTH: usize = 64;
-// A separate budget limits recursive AST nodes and token copies from iterative else-if chains.
+// The AST remains recursive even though else-if parsing is iterative.
 const MAX_ELSE_IF_DEPTH: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +21,7 @@ pub struct ParserMark {
 #[derive(Debug)]
 pub struct Parser {
     tokens: Vec<SpannedToken>,
+    ast_tokens: OnceLock<Arc<Vec<Token>>>,
     cursor: usize,
     path: PathBuf,
     line_info: Vec<usize>,
@@ -84,9 +85,9 @@ impl Parser {
             Ok(tokens) => (tokens, None),
             Err(err) => (Vec::new(), Some(err)),
         };
-
         Self {
             tokens,
+            ast_tokens: OnceLock::new(),
             cursor: 0,
             path,
             line_info,
@@ -1210,6 +1211,7 @@ impl Parser {
     }
 
     fn parse_pointer_type_prefix(&mut self) -> Result<ast::Expression, Error> {
+        self.skip_comments();
         let mark = self.preback();
         let pos = self.current_pos();
         let double_asterisk = self.consume_symbol(Symbol::Asterisk2);
@@ -1238,9 +1240,10 @@ impl Parser {
             tokens: self.tokens_since(mark),
         };
         if double_asterisk {
-            let tokens = pointer.tokens.clone();
+            let mut inner_tokens = pointer.tokens.to_vec();
+            inner_tokens[0] = Token::Symbol(Symbol::Asterisk);
+            let tokens = std::mem::replace(&mut pointer.tokens, inner_tokens.into());
             pointer.pos += 1;
-            pointer.tokens[0] = Token::Symbol(Symbol::Asterisk);
             pointer = ast::PointerType {
                 pos,
                 kind: ast::PointerKind::One,
@@ -1907,7 +1910,7 @@ impl Parser {
                 then_branch: Some(Box::new(then_branch)),
                 else_payload: None,
                 else_branch: None,
-                tokens: Vec::new(),
+                tokens: self.tokens_since(mark),
             };
             if self.consume_keyword(Keyword::Else) {
                 clause.else_payload = self.parse_optional_payload(PayloadSyntax::Plain)?;
@@ -2566,11 +2569,16 @@ impl Parser {
         self.comments.truncate(mark.comment_count);
     }
 
-    fn tokens_since(&self, mark: ParserMark) -> Vec<Token> {
-        self.tokens[mark.cursor..self.cursor]
-            .iter()
-            .map(|token| token.token.clone())
-            .collect()
+    fn tokens_since(&self, mark: ParserMark) -> TokenSpan {
+        let backing = self.ast_tokens.get_or_init(|| {
+            Arc::new(
+                self.tokens
+                    .iter()
+                    .map(|token| token.token.clone())
+                    .collect(),
+            )
+        });
+        TokenSpan::from_shared(backing, mark.cursor, self.cursor)
     }
 
     fn unexpected(&self, expect: Vec<TokenKind>, actual: Option<Token>) -> Error {
@@ -2720,6 +2728,22 @@ extern "c" var b: c_int;"#;
         let mut parser = Parser::from("a == b == c");
         assert!(parser.expression().is_err());
         assert!(parse_source("pub const bad = a == b == c;").is_err());
+    }
+
+    #[test]
+    fn overlapping_ast_token_ranges_share_the_same_tokens() {
+        let file = parse_source("pub fn f() void { return; }").unwrap();
+        let ast::ContainerMember::Fn(function) = &file.members[0] else {
+            panic!("expected function declaration");
+        };
+        let body = function.body.as_ref().unwrap();
+        let start = function
+            .tokens
+            .iter()
+            .position(|token| *token == Token::Symbol(Symbol::LBrace))
+            .unwrap();
+        assert_eq!(&function.tokens[start..], body.tokens.as_slice());
+        assert!(std::ptr::eq(&function.tokens[start], &body.tokens[0]));
     }
 
     #[test]
@@ -3040,6 +3064,27 @@ pub fn add(a: u32, comptime b: anytype) u32 {
         assert_eq!(inner.pos, outer.pos + 1);
         assert_eq!(inner.modifiers, [ast::PointerModifier::Const]);
         assert_eq!(inner.tokens[0], Token::Symbol(Symbol::Asterisk));
+    }
+
+    #[test]
+    fn line_comment_before_double_pointer_keeps_token_spelling() {
+        let file = parse_source("const T = [1] // element\n **u8;").unwrap();
+        let ast::ContainerMember::Var(declaration) = &file.members[0] else {
+            panic!("expected declaration");
+        };
+        let Some(ast::Expression::ArrayType(array)) = &declaration.init else {
+            panic!("expected array type");
+        };
+        let ast::Expression::Pointer(outer) = array.child.as_ref() else {
+            panic!("expected outer pointer");
+        };
+        let ast::Expression::Pointer(inner) = outer.child.as_ref() else {
+            panic!("expected inner pointer");
+        };
+        assert_eq!(outer.tokens[0], Token::Symbol(Symbol::Asterisk2));
+        assert_eq!(inner.tokens[0], Token::Symbol(Symbol::Asterisk));
+        assert_eq!(inner.tokens.len(), 2);
+        assert_eq!(file.comments.len(), 1);
     }
 
     #[test]

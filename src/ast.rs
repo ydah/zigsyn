@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::token::{CommentKind, Keyword, LitKind, Token};
+use crate::token::{CommentKind, Keyword, LitKind, Token, TokenSpan};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
@@ -53,7 +53,7 @@ pub struct ContainerField {
     pub ty: Option<Expression>,
     pub align: Option<Expression>,
     pub default: Option<Expression>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -72,7 +72,7 @@ pub struct FnDecl {
     pub bang: bool,
     pub ret: Option<Box<Expression>>,
     pub body: Option<Block>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -89,7 +89,7 @@ pub struct VarDecl {
     pub addrspace: Option<Expression>,
     pub linksection: Option<Expression>,
     pub init: Option<Expression>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 impl VarDecl {
@@ -112,7 +112,7 @@ pub struct TestDecl {
     pub docs: Vec<Arc<Comment>>,
     pub name: Option<Expression>,
     pub body: Block,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -121,7 +121,7 @@ pub struct ComptimeDecl {
     pub pos: usize,
     pub docs: Vec<Arc<Comment>>,
     pub block: Block,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -377,7 +377,7 @@ pub struct AssignExpr {
     pub lhs: Vec<Expression>,
     pub op: Token,
     pub rhs: Box<Expression>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -389,7 +389,7 @@ pub struct IfExpr {
     pub then_branch: Option<Box<Expression>>,
     pub else_payload: Option<Payload>,
     pub else_branch: Option<Box<Expression>>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -404,7 +404,7 @@ pub struct WhileExpr {
     pub body: Option<Box<Expression>>,
     pub else_payload: Option<Payload>,
     pub else_branch: Option<Box<Expression>>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -417,7 +417,7 @@ pub struct ForExpr {
     pub payload: Option<Payload>,
     pub body: Option<Box<Expression>>,
     pub else_branch: Option<Box<Expression>>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -427,7 +427,7 @@ pub struct SwitchExpr {
     pub label: Option<Ident>,
     pub target: Option<Box<Expression>>,
     pub prongs: Vec<SwitchProng>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -436,7 +436,7 @@ pub struct Block {
     pub pos: usize,
     pub label: Option<Ident>,
     pub statements: Vec<Statement>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -471,7 +471,7 @@ pub struct AsmExpr {
     pub outputs: Vec<AsmOutput>,
     pub inputs: Vec<AsmInput>,
     pub clobbers: Option<Box<Expression>>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -498,7 +498,7 @@ pub struct Slice {
     pub start: Option<Box<Expression>>,
     pub end: Option<Box<Expression>>,
     pub sentinel: Option<Box<Expression>>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -529,7 +529,7 @@ pub struct CurlyInit {
     pub pos: usize,
     pub ty: Box<Expression>,
     pub entries: Vec<InitEntry>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -554,7 +554,7 @@ pub struct PointerType {
     pub kind: PointerKind,
     pub modifiers: Vec<PointerModifier>,
     pub child: Box<Expression>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -564,7 +564,7 @@ pub struct SliceType {
     pub sentinel: Option<Box<Expression>>,
     pub modifiers: Vec<PointerModifier>,
     pub child: Box<Expression>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -574,7 +574,7 @@ pub struct ArrayType {
     pub len: Box<Expression>,
     pub sentinel: Option<Box<Expression>>,
     pub child: Box<Expression>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -585,7 +585,7 @@ pub struct ContainerDecl {
     pub kind: Keyword,
     pub arg: Option<ContainerArg>,
     pub members: Vec<ContainerMember>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
     #[cfg_attr(feature = "serde", serde(default))]
     pub container_docs: Vec<Arc<Comment>>,
 }
@@ -597,7 +597,7 @@ pub enum ContainerArg {
     Enum {
         pos: usize,
         tag_type: Option<Box<Expression>>,
-        tokens: Vec<Token>,
+        tokens: TokenSpan,
     },
 }
 
@@ -686,7 +686,7 @@ pub struct DeferStmt {
     pub err: bool,
     pub payload: Option<Payload>,
     pub body: Box<Statement>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -698,7 +698,7 @@ pub struct IfStmt {
     pub then_branch: Box<Statement>,
     pub else_payload: Option<Payload>,
     pub else_branch: Option<Box<Statement>>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -711,7 +711,7 @@ pub struct LoopStmt {
     pub body: Box<Statement>,
     pub else_payload: Option<Payload>,
     pub else_branch: Option<Box<Statement>>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -734,7 +734,7 @@ pub struct SwitchStmt {
     pub pos: usize,
     pub label: Option<Ident>,
     pub expr: SwitchExpr,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -742,7 +742,7 @@ pub struct SwitchStmt {
 pub struct SuspendStmt {
     pub pos: usize,
     pub body: Box<Statement>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -750,7 +750,7 @@ pub struct SuspendStmt {
 pub struct NosuspendStmt {
     pub pos: usize,
     pub body: Box<Statement>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -758,7 +758,7 @@ pub struct NosuspendStmt {
 pub struct ComptimeStmt {
     pub pos: usize,
     pub body: Box<Statement>,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -768,7 +768,7 @@ pub struct AssignStmt {
     pub lhs: Vec<Expression>,
     pub op: Token,
     pub rhs: Expression,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -777,7 +777,7 @@ pub struct ExprStmt {
     pub pos: usize,
     pub expr: Expression,
     pub semicolon: bool,
-    pub tokens: Vec<Token>,
+    pub tokens: TokenSpan,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
