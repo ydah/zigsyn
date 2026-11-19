@@ -39,6 +39,20 @@ struct LocalVarProto {
     linksection: Option<ast::Expression>,
 }
 
+impl LocalVarProto {
+    fn into_later_binding(self) -> ast::VarProtoOrExpr {
+        ast::VarProtoOrExpr::VarProto {
+            pos: self.name.pos,
+            keyword: self.keyword,
+            name: self.name,
+            ty: self.ty,
+            align: self.align.map(Box::new),
+            addrspace: self.addrspace.map(Box::new),
+            linksection: self.linksection.map(Box::new),
+        }
+    }
+}
+
 enum PayloadSyntax {
     Plain,
     Pointer,
@@ -406,12 +420,7 @@ impl Parser {
                         first_keyword = proto.keyword;
                     }
                     has_var_proto = true;
-                    var_lhs.push(ast::VarProtoOrExpr::VarProto {
-                        pos: proto.name.pos,
-                        keyword: proto.keyword,
-                        name: proto.name,
-                        ty: proto.ty,
-                    });
+                    var_lhs.push(proto.into_later_binding());
                 } else {
                     let expr = self.parse_expr_bp(0)?;
                     assign_lhs.push(expr.clone());
@@ -484,20 +493,18 @@ impl Parser {
         let mut lhs = vec![ast::VarProtoOrExpr::VarProto {
             pos: first.name.pos,
             keyword: first.keyword,
-            name: first.name.clone(),
+            name: first.name,
             ty: first.ty,
+            align: None,
+            addrspace: None,
+            linksection: None,
         }];
         let mut destructuring = false;
         while self.consume_symbol(Symbol::Comma) {
             destructuring = true;
             if self.current_is_keyword(Keyword::Const) || self.current_is_keyword(Keyword::Var) {
                 let proto = self.parse_local_var_proto()?;
-                lhs.push(ast::VarProtoOrExpr::VarProto {
-                    pos: proto.name.pos,
-                    keyword: proto.keyword,
-                    name: proto.name,
-                    ty: proto.ty,
-                });
+                lhs.push(proto.into_later_binding());
             } else {
                 lhs.push(ast::VarProtoOrExpr::Expr(self.parse_expr_bp(0)?));
             }
@@ -860,6 +867,9 @@ impl Parser {
             keyword,
             name,
             ty,
+            align: None,
+            addrspace: None,
+            linksection: None,
         }];
         Ok(ast::ContainerMember::Var(Box::new(ast::VarDecl {
             pos,
@@ -3310,6 +3320,55 @@ pub fn f() void {
                 .collect();
             assert_eq!(names, ["x", "y"], "{source}");
         }
+    }
+
+    #[test]
+    fn retains_modifiers_on_later_destructuring_bindings() {
+        let file = parse_source(
+            r#"fn f() void {
+    var x: u8 align(2), var y: u32 align(8) addrspace(.generic) linksection(".data") = .{ 1, 2 };
+    x, var z: u32 align(16) = .{ 3, 4 };
+}"#,
+        )
+        .unwrap();
+        let ast::ContainerMember::Fn(function) = &file.members[0] else {
+            panic!("expected function");
+        };
+        let [ast::Statement::Var(bindings), ast::Statement::Var(mixed)] =
+            function.body.as_ref().unwrap().statements.as_slice()
+        else {
+            panic!("expected two destructuring declarations");
+        };
+        assert!(matches!(&bindings.align, Some(ast::Expression::BasicLit(lit)) if lit.text == "2"));
+        assert!(matches!(
+            &bindings.lhs[0],
+            ast::VarProtoOrExpr::VarProto { align: None, .. }
+        ));
+        let ast::VarProtoOrExpr::VarProto {
+            align: Some(align),
+            addrspace: Some(addrspace),
+            linksection: Some(linksection),
+            ..
+        } = &bindings.lhs[1]
+        else {
+            panic!("expected modifiers on second binding");
+        };
+        assert!(matches!(align.as_ref(), ast::Expression::BasicLit(lit) if lit.text == "8"));
+        assert!(
+            matches!(addrspace.as_ref(), ast::Expression::EnumLiteral(lit) if lit.name.name == "generic")
+        );
+        assert!(
+            matches!(linksection.as_ref(), ast::Expression::BasicLit(lit) if lit.text == "\".data\"")
+        );
+
+        let ast::VarProtoOrExpr::VarProto {
+            align: Some(align), ..
+        } = &mixed.lhs[1]
+        else {
+            panic!("expected alignment on binding after assignment target");
+        };
+        assert!(matches!(align.as_ref(), ast::Expression::BasicLit(lit) if lit.text == "16"));
+        assert!(mixed.align.is_none());
     }
 
     #[test]

@@ -134,11 +134,18 @@ pub struct Ident {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum VarProtoOrExpr {
+    /// The enclosing [`VarDecl`] owns the modifiers on its first left-hand-side entry.
     VarProto {
         pos: usize,
         keyword: Keyword,
         name: Ident,
         ty: Option<Expression>,
+        #[cfg_attr(feature = "serde", serde(default))]
+        align: Option<Box<Expression>>,
+        #[cfg_attr(feature = "serde", serde(default))]
+        addrspace: Option<Box<Expression>>,
+        #[cfg_attr(feature = "serde", serde(default))]
+        linksection: Option<Box<Expression>>,
     },
     Expr(Expression),
 }
