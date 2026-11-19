@@ -79,6 +79,19 @@ let expression = parser.expression().expect("valid Zig expression");
 - `zigsyn::Parser` exposes lower-level parsing entry points.
 - `zigsyn::scanner::Scanner` exposes tokenization.
 
+### Migrating from the 0.1.0 AST
+
+- Replace `var.ty` with `var.ty()` to borrow the type annotation on the first
+  left-hand side entry.
+- Replace `init.fields` with `init.fields()` to iterate over initializer values
+  in source order.
+
+With `serde`, `VarDecl` serializes its type annotations in `lhs` and `AnonInit`
+serializes its values in `entries`. Update JSON consumers that read the former
+`ty` and `fields` keys. The current AST can read JSON emitted by the 0.1.0 parser.
+For formats that encode struct fields by position, regenerate the ASTs from Zig
+source or decode them with 0.1.0 and convert them to the current AST.
+
 ## Project Layout
 
 - [`src/ast.rs`](src/ast.rs): AST definitions.
