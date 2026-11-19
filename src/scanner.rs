@@ -356,7 +356,7 @@ impl Scanner {
                 }
                 Some('\n') | None => return Err(self.error_here("unterminated string literal")),
                 Some('\\') => self.scan_escape()?,
-                Some(ch) if ch.is_control() => {
+                Some(ch) if ch.is_ascii_control() => {
                     return Err(self.error_here("control character in string literal"));
                 }
                 Some(_) => {
@@ -375,7 +375,7 @@ impl Scanner {
         match self.peek() {
             Some('\\') => self.scan_escape(),
             Some('\n' | '\'') | None => Err(self.error_here(&format!("invalid {label}"))),
-            Some(ch) if ch.is_control() => {
+            Some(ch) if ch.is_ascii_control() => {
                 Err(self.error_here(&format!("control character in {label}")))
             }
             Some(_) => {
@@ -664,6 +664,23 @@ mod tests {
         assert!(Scanner::from("\"a\n b\"").next_token().is_err());
         assert!(Scanner::from("\"\\q\"").next_token().is_err());
         assert!(Scanner::from("'ab'").next_token().is_err());
+    }
+
+    #[test]
+    fn scan_accepts_non_ascii_control_characters_in_literals() {
+        for (source, kind) in [
+            ("\"\u{0080}\u{009f}\"", LitKind::String),
+            ("'\u{0080}'", LitKind::Char),
+            ("'\u{009f}'", LitKind::Char),
+        ] {
+            assert_eq!(
+                scan_tokens(source),
+                [Token::Literal(kind, source.to_owned())]
+            );
+        }
+        for source in ["\"\t\"", "'\u{007f}'"] {
+            assert!(Scanner::from(source).next_token().is_err());
+        }
     }
 
     #[test]
