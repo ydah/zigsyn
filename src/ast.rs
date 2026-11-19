@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::token::{CommentKind, Keyword, LitKind, Token};
 
@@ -8,9 +8,9 @@ use crate::token::{CommentKind, Keyword, LitKind, Token};
 pub struct File {
     pub path: PathBuf,
     pub line_info: Vec<usize>,
-    pub container_docs: Vec<Rc<Comment>>,
+    pub container_docs: Vec<Arc<Comment>>,
     pub members: Vec<ContainerMember>,
-    pub comments: Vec<Rc<Comment>>,
+    pub comments: Vec<Arc<Comment>>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -47,7 +47,7 @@ impl ContainerMember {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContainerField {
     pub pos: usize,
-    pub docs: Vec<Rc<Comment>>,
+    pub docs: Vec<Arc<Comment>>,
     pub comptime: bool,
     pub name: Option<Ident>,
     pub ty: Option<Expression>,
@@ -60,7 +60,7 @@ pub struct ContainerField {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDecl {
     pub pos: usize,
-    pub docs: Vec<Rc<Comment>>,
+    pub docs: Vec<Arc<Comment>>,
     pub visibility: Option<Keyword>,
     pub modifier: Option<FnModifier>,
     pub name: Option<Ident>,
@@ -79,7 +79,7 @@ pub struct FnDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VarDecl {
     pub pos: usize,
-    pub docs: Vec<Rc<Comment>>,
+    pub docs: Vec<Arc<Comment>>,
     pub visibility: Option<Keyword>,
     pub extern_export: Option<VarModifier>,
     pub threadlocal: bool,
@@ -109,7 +109,7 @@ impl VarDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TestDecl {
     pub pos: usize,
-    pub docs: Vec<Rc<Comment>>,
+    pub docs: Vec<Arc<Comment>>,
     pub name: Option<Expression>,
     pub body: Block,
     pub tokens: Vec<Token>,
@@ -119,7 +119,7 @@ pub struct TestDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComptimeDecl {
     pub pos: usize,
-    pub docs: Vec<Rc<Comment>>,
+    pub docs: Vec<Arc<Comment>>,
     pub block: Block,
     pub tokens: Vec<Token>,
 }
@@ -587,7 +587,7 @@ pub struct ContainerDecl {
     pub members: Vec<ContainerMember>,
     pub tokens: Vec<Token>,
     #[cfg_attr(feature = "serde", serde(default))]
-    pub container_docs: Vec<Rc<Comment>>,
+    pub container_docs: Vec<Arc<Comment>>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -793,7 +793,7 @@ pub struct Payload {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamDecl {
     pub pos: usize,
-    pub docs: Vec<Rc<Comment>>,
+    pub docs: Vec<Arc<Comment>>,
     pub noalias: bool,
     pub comptime: bool,
     pub name: Option<Ident>,

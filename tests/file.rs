@@ -63,3 +63,11 @@ fn parse_errors_report_byte_offsets() {
         zigsyn::Error::UnexpectedToken { offset, .. } if offset == syntax_input.find("u8").unwrap()
     ));
 }
+
+#[test]
+fn parsed_ast_can_be_shared_across_threads() {
+    fn require_thread_safe(_: impl Send + Sync) {}
+
+    let file = zigsyn::parse_source("/// Main entry point.\npub fn main() void {}").unwrap();
+    require_thread_safe(file);
+}
