@@ -755,7 +755,7 @@ impl Parser {
         let linksection = self.parse_expr_attr(Keyword::Linksection)?;
         let callconv = self.parse_expr_attr(Keyword::Callconv)?;
         let bang = self.consume_symbol(Symbol::ExclamationMark);
-        let ret = Some(Box::new(self.parse_type_expr()?));
+        let ret = Box::new(self.parse_type_expr()?);
         let tokens = self.tokens_since(mark);
 
         Ok(ast::FnDecl {
@@ -1123,9 +1123,9 @@ impl Parser {
                     .current_operator()
                     .is_some_and(|next| token_is_comparison(&next))
             {
-                return Err(self.unexpected(
-                    vec![TokenKind::Symbol(Symbol::Semicolon)],
-                    self.current().map(|token| token.token.clone()),
+                return Err(self.error_at(
+                    self.current_pos(),
+                    "comparison operators are not associative",
                 ));
             }
 
@@ -1438,17 +1438,17 @@ impl Parser {
         let mark = self.preback();
         let pos = self.current_pos();
         self.expect_symbol(Symbol::LBracket)?;
-        let start = self.parse_expr_bp(0)?;
+        let start = self.parse_value_expr()?;
         if self.consume_symbol(Symbol::Dot2) {
             let end = if self.current_is_symbol(Symbol::Colon)
                 || self.current_is_symbol(Symbol::RBracket)
             {
                 None
             } else {
-                Some(Box::new(self.parse_expr_bp(0)?))
+                Some(Box::new(self.parse_value_expr()?))
             };
             let sentinel = if self.consume_symbol(Symbol::Colon) {
-                Some(Box::new(self.parse_expr_bp(0)?))
+                Some(Box::new(self.parse_value_expr()?))
             } else {
                 None
             };
@@ -1572,7 +1572,7 @@ impl Parser {
                 self.advance();
                 Ok(ast::Expression::Ident(ast::Ident {
                     pos: current.pos,
-                    name,
+                    name: decode_quoted_identifier(&name).unwrap_or(name),
                 }))
             }
             Token::Literal(LitKind::BuiltinIdent, name) => {
@@ -1637,9 +1637,12 @@ impl Parser {
             ) => self.parse_container_decl_expr(),
             Token::Symbol(Symbol::LParen) => {
                 self.advance();
-                let expr = self.parse_expr_bp(0)?;
+                let expr = self.parse_value_expr()?;
                 self.expect_symbol(Symbol::RParen)?;
-                Ok(ast::Expression::Grouped(Box::new(expr)))
+                Ok(ast::Expression::Grouped {
+                    pos: current.pos,
+                    expr: Box::new(expr),
+                })
             }
             Token::Symbol(Symbol::Dot) => {
                 self.advance();
@@ -1659,7 +1662,10 @@ impl Parser {
             Token::Keyword(Keyword::Comptime) => {
                 self.advance();
                 let expr = self.parse_expr_bp(0)?;
-                Ok(ast::Expression::Comptime(Box::new(expr)))
+                Ok(ast::Expression::Comptime {
+                    pos: current.pos,
+                    expr: Box::new(expr),
+                })
             }
             Token::Keyword(Keyword::Nosuspend) => {
                 self.advance();
@@ -1905,9 +1911,9 @@ impl Parser {
             self.skip_comments();
             let mut clause = ast::IfExpr {
                 pos,
-                condition: Some(Box::new(condition)),
+                condition: Box::new(condition),
                 payload,
-                then_branch: Some(Box::new(then_branch)),
+                then_branch: Box::new(then_branch),
                 else_payload: None,
                 else_branch: None,
                 tokens: self.tokens_since(mark),
@@ -2321,12 +2327,7 @@ impl Parser {
             _ => {}
         }
         self.expect_symbol(Symbol::Pipe)?;
-        Ok(Some(ast::Payload {
-            pos,
-            star,
-            names,
-            stars,
-        }))
+        Ok(Some(ast::Payload { pos, names, stars }))
     }
 
     fn validate_balanced_delimiters(&self) -> Result<(), Error> {
@@ -2530,7 +2531,10 @@ impl Parser {
         match token.token {
             Token::Literal(LitKind::Ident, name) => {
                 self.advance();
-                Ok(ast::Ident { pos, name })
+                Ok(ast::Ident {
+                    pos,
+                    name: decode_quoted_identifier(&name).unwrap_or(name),
+                })
             }
             actual => Err(self.unexpected(vec![TokenKind::Literal(LitKind::Ident)], Some(actual))),
         }
@@ -2612,6 +2616,38 @@ impl Parser {
         let line_start = self.line_info.get(line_idx).copied().unwrap_or(0);
         (line_idx + 1, pos.saturating_sub(line_start) + 1)
     }
+}
+
+fn decode_quoted_identifier(spelling: &str) -> Option<String> {
+    let mut remaining = spelling.strip_prefix("@\"")?.strip_suffix('"')?;
+    let mut bytes = Vec::with_capacity(remaining.len());
+    while let Some((literal, escape)) = remaining.split_once('\\') {
+        bytes.extend_from_slice(literal.as_bytes());
+        let kind = *escape.as_bytes().first()?;
+        remaining = escape.get(1..)?;
+        let byte = match kind {
+            b'x' => {
+                let byte = u8::from_str_radix(remaining.get(..2)?, 16).ok()?;
+                remaining = remaining.get(2..)?;
+                byte
+            }
+            b'u' => {
+                let (digits, rest) = remaining.strip_prefix('{')?.split_once('}')?;
+                let scalar = char::from_u32(u32::from_str_radix(digits, 16).ok()?)?;
+                bytes.extend_from_slice(scalar.encode_utf8(&mut [0; 4]).as_bytes());
+                remaining = rest;
+                continue;
+            }
+            b'n' => b'\n',
+            b'r' => b'\r',
+            b't' => b'\t',
+            b'\\' | b'\'' | b'"' => kind,
+            _ => return None,
+        };
+        bytes.push(byte);
+    }
+    bytes.extend_from_slice(remaining.as_bytes());
+    String::from_utf8(bytes).ok()
 }
 
 fn token_is_comparison(token: &Token) -> bool {
@@ -2726,8 +2762,48 @@ extern "c" var b: c_int;"#;
         assert_eq!(root.op, Token::Symbol(Symbol::Plus));
 
         let mut parser = Parser::from("a == b == c");
-        assert!(parser.expression().is_err());
+        let err = parser.expression().unwrap_err().to_string();
+        assert!(
+            err.contains("1:8 comparison operators are not associative"),
+            "{err}"
+        );
         assert!(parse_source("pub const bad = a == b == c;").is_err());
+    }
+
+    #[test]
+    fn wrapper_expression_positions_start_at_their_own_tokens() {
+        for source in ["  (value)", "  comptime value"] {
+            let expr = Parser::from(source).expression().unwrap();
+            assert_eq!(expr.pos(), 2, "{source}");
+        }
+    }
+
+    #[test]
+    fn normalizes_quoted_identifiers_and_retains_token_spelling() {
+        let cases = [
+            (r#"@"foo""#, "foo", "foo"),
+            (r#"@"e\u{e9}""#, r#"@"e\xC3\xA9""#, "eé"),
+            (r#"@"\xFF""#, r#"@"\xFF""#, r#"@"\xFF""#),
+        ];
+        for (spelling, reference, expected) in cases {
+            let file = parse_source(format!("const {spelling} = {reference};")).unwrap();
+            let ast::ContainerMember::Var(decl) = &file.members[0] else {
+                panic!("expected variable declaration");
+            };
+            let ast::VarProtoOrExpr::VarProto { name, .. } = &decl.lhs[0] else {
+                panic!("expected declaration name");
+            };
+            assert_eq!(name.name, expected);
+            let Some(ast::Expression::Ident(ident)) = &decl.init else {
+                panic!("expected identifier reference");
+            };
+            assert_eq!(ident.name, expected);
+            for source_spelling in [spelling, reference] {
+                assert!(decl.tokens.iter().any(|token| {
+                    matches!(token, Token::Literal(LitKind::Ident, spelling) if spelling == source_spelling)
+                }));
+            }
+        }
     }
 
     #[test]
@@ -2934,7 +3010,7 @@ extern "c" var b: c_int;"#;
             panic!("expected subtraction outside the grouped expression");
         };
         assert_eq!(outer_op.op, Token::Symbol(Symbol::Minus));
-        let ast::Expression::Grouped(grouped) = *outer_op.lhs else {
+        let ast::Expression::Grouped { expr: grouped, .. } = *outer_op.lhs else {
             panic!("expected grouped if chain");
         };
         let ast::Expression::If(outer) = *grouped else {
@@ -3022,7 +3098,7 @@ pub fn add(a: u32, comptime b: anytype) u32 {
         assert_eq!(func.visibility, Some(Keyword::Pub));
         assert_eq!(func.name.as_ref().unwrap().name, "add");
         assert_eq!(func.params.len(), 2);
-        assert!(func.ret.is_some());
+        assert!(matches!(func.ret.as_ref(), ast::Expression::Ident(ident) if ident.name == "u32"));
         let body = func.body.as_ref().unwrap();
         assert_eq!(body.statements.len(), 2);
         assert!(matches!(body.statements[0], ast::Statement::Var(_)));
@@ -3112,6 +3188,16 @@ pub fn add(a: u32, comptime b: anytype) u32 {
     }
 
     #[test]
+    fn grouped_and_index_expressions_keep_value_context_inside_types() {
+        for source in [
+            "const S = struct { T: type }; const value: ((S{ .T = u8 }).T) = 1;",
+            "const value: types[Index{ .offset = 0 }] = 1;",
+        ] {
+            parse_source(source).unwrap_or_else(|err| panic!("{source}: {err}"));
+        }
+    }
+
+    #[test]
     fn parses_initializer_arguments_inside_a_return_type() {
         parse_source("fn f() std.meta.Tuple(&[_]type{ u8, u8 }) {}").unwrap();
     }
@@ -3134,10 +3220,15 @@ pub fn add(a: u32, comptime b: anytype) u32 {
     #[test]
     fn parses_control_and_container_expressions() {
         let mut parser = Parser::from("if (a) b else c");
-        assert!(matches!(
-            parser.expression().unwrap(),
-            ast::Expression::If(_)
-        ));
+        let ast::Expression::If(if_expr) = parser.expression().unwrap() else {
+            panic!("expected if expression");
+        };
+        assert!(
+            matches!(if_expr.condition.as_ref(), ast::Expression::Ident(ident) if ident.name == "a")
+        );
+        assert!(
+            matches!(if_expr.then_branch.as_ref(), ast::Expression::Ident(ident) if ident.name == "b")
+        );
 
         let mut parser = Parser::from("for (items, 0..) |item, i| item");
         let ast::Expression::For(for_expr) = parser.expression().unwrap() else {
@@ -3178,6 +3269,7 @@ pub fn add(a: u32, comptime b: anytype) u32 {
             panic!("expected for expression");
         };
         let payload = for_expr.payload.unwrap();
+        assert!(payload.star());
         assert_eq!(payload.names.len(), 2);
         assert_eq!(payload.stars, vec![true, true]);
 

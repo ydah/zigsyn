@@ -70,7 +70,7 @@ pub struct FnDecl {
     pub linksection: Option<Expression>,
     pub callconv: Option<Expression>,
     pub bang: bool,
-    pub ret: Option<Box<Expression>>,
+    pub ret: Box<Expression>,
     pub body: Option<Block>,
     pub tokens: TokenSpan,
 }
@@ -128,6 +128,8 @@ pub struct ComptimeDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ident {
     pub pos: usize,
+    /// Decoded identifier text. Quoted names that cannot be decoded as UTF-8
+    /// retain their source spelling.
     pub name: String,
 }
 
@@ -177,7 +179,7 @@ pub enum Expression {
     AnonInit(AnonInit),
     ErrorValue(ErrorValue),
     ErrorSetDecl(ErrorSetDecl),
-    Grouped(Box<Expression>),
+    Grouped { pos: usize, expr: Box<Expression> },
     Unreachable(usize),
     AnyframeType(AnyframeType),
     Unary(UnaryOp),
@@ -192,7 +194,7 @@ pub enum Expression {
     Break(BreakExpr),
     Continue(ContinueExpr),
     Return(ReturnExpr),
-    Comptime(Box<Expression>),
+    Comptime { pos: usize, expr: Box<Expression> },
     Nosuspend(Box<Expression>),
     Resume(Box<Expression>),
     Asm(AsmExpr),
@@ -223,7 +225,7 @@ impl Expression {
             Self::AnonInit(node) => node.pos,
             Self::ErrorValue(node) => node.pos,
             Self::ErrorSetDecl(node) => node.pos,
-            Self::Grouped(expr) => expr.pos(),
+            Self::Grouped { pos, .. } => *pos,
             Self::Unreachable(pos) => *pos,
             Self::AnyframeType(node) => node.pos,
             Self::Unary(node) => node.pos,
@@ -238,7 +240,7 @@ impl Expression {
             Self::Break(node) => node.pos,
             Self::Continue(node) => node.pos,
             Self::Return(node) => node.pos,
-            Self::Comptime(expr) => expr.pos(),
+            Self::Comptime { pos, .. } => *pos,
             Self::Nosuspend(expr) => expr.pos(),
             Self::Resume(expr) => expr.pos(),
             Self::Asm(node) => node.pos,
@@ -384,9 +386,9 @@ pub struct AssignExpr {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IfExpr {
     pub pos: usize,
-    pub condition: Option<Box<Expression>>,
+    pub condition: Box<Expression>,
     pub payload: Option<Payload>,
-    pub then_branch: Option<Box<Expression>>,
+    pub then_branch: Box<Expression>,
     pub else_payload: Option<Payload>,
     pub else_branch: Option<Box<Expression>>,
     pub tokens: TokenSpan,
@@ -784,9 +786,15 @@ pub struct ExprStmt {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Payload {
     pub pos: usize,
-    pub star: bool,
     pub names: Vec<Ident>,
     pub stars: Vec<bool>,
+}
+
+impl Payload {
+    /// Whether the first capture is by pointer.
+    pub fn star(&self) -> bool {
+        self.stars.first().copied().unwrap_or(false)
+    }
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
