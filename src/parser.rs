@@ -22,6 +22,7 @@ pub struct Parser {
     cursor: usize,
     path: PathBuf,
     line_info: Vec<usize>,
+    source_len: usize,
     comments: Vec<Rc<ast::Comment>>,
     depth: usize,
     suppress_curly_suffix: usize,
@@ -59,6 +60,7 @@ impl Parser {
     fn from_scanner(scanner: Scanner) -> Self {
         let path = scanner.path().to_path_buf();
         let line_info = scanner.lines().to_vec();
+        let source_len = scanner.source().len();
         let scan_result = scanner.scan_all();
         let (tokens, scan_error) = match scan_result {
             Ok(tokens) => (tokens, None),
@@ -70,6 +72,7 @@ impl Parser {
             cursor: 0,
             path,
             line_info,
+            source_len,
             comments: Vec::new(),
             depth: 0,
             suppress_curly_suffix: 0,
@@ -2432,9 +2435,7 @@ impl Parser {
     }
 
     fn current_pos(&self) -> usize {
-        self.current()
-            .map(|token| token.pos)
-            .unwrap_or_else(|| *self.line_info.last().unwrap_or(&0))
+        self.current().map_or(self.source_len, |token| token.pos)
     }
 
     fn current_is_symbol(&self, symbol: Symbol) -> bool {
@@ -2653,9 +2654,7 @@ impl Parser {
     }
 
     fn location_for_current(&self) -> (usize, usize) {
-        self.current()
-            .map(|token| self.line_col(token.pos))
-            .unwrap_or_else(|| self.line_col(*self.line_info.last().unwrap_or(&0)))
+        self.line_col(self.current_pos())
     }
 
     fn line_col(&self, pos: usize) -> (usize, usize) {
@@ -2868,6 +2867,22 @@ test "basic" {}
         .unwrap();
         assert_eq!(file.container_docs.len(), 1);
         assert_eq!(file.comments.len(), 7);
+    }
+
+    #[test]
+    fn reports_eof_at_the_end_of_source() {
+        for (source, line, column) in [
+            ("const x =", 1, 10),
+            ("const x =\n", 2, 1),
+            ("const x =\n  ", 2, 3),
+            ("const x = \"é\"  ", 1, 17),
+        ] {
+            let error = parse_source(source).unwrap_err().to_string();
+            assert!(
+                error.starts_with(&format!("<source>:{line}:{column} ")),
+                "{source:?}: {error}"
+            );
+        }
     }
 
     #[test]
