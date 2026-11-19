@@ -1059,7 +1059,7 @@ impl Parser {
     }
 
     fn parse_expr_bp_inner(&mut self, min_bp: u8) -> Result<ast::Expression, Error> {
-        let mut lhs = self.parse_prefix_expr()?;
+        let mut lhs = self.parse_prefix_expr(true)?;
 
         loop {
             self.skip_comments();
@@ -1110,8 +1110,8 @@ impl Parser {
     }
 
     /// PrefixExpr <- PrefixOp* PrimaryExpr
-    fn parse_prefix_expr(&mut self) -> Result<ast::Expression, Error> {
-        if self.current_is_keyword(Keyword::Anyframe)
+    fn parse_prefix_expr(&mut self, allow_initializer: bool) -> Result<ast::Expression, Error> {
+        let expr = if self.current_is_keyword(Keyword::Anyframe)
             && self
                 .peek_non_comment(1)
                 .is_some_and(|token| matches!(token.token, Token::Symbol(Symbol::MinusRArrow)))
@@ -1119,39 +1119,39 @@ impl Parser {
             let pos = self.current_pos();
             self.cursor += 1;
             self.expect_symbol(Symbol::MinusRArrow)?;
-            let result = self.with_depth(Self::parse_prefix_expr)?;
-            return Ok(ast::Expression::AnyframeType(ast::AnyframeType {
+            let result = self.parse_type_prefix_operand()?;
+            ast::Expression::AnyframeType(ast::AnyframeType {
                 pos,
                 result: Some(Box::new(result)),
-            }));
-        }
-
-        if self.current_is_symbol(Symbol::QuestionMark) {
+            })
+        } else if self.current_is_symbol(Symbol::QuestionMark) {
             let pos = self.current_pos();
             self.cursor += 1;
-            let child = self.with_depth(Self::parse_prefix_expr)?;
-            return Ok(ast::Expression::Optional(ast::OptionalType {
+            let child = self.parse_type_prefix_operand()?;
+            ast::Expression::Optional(ast::OptionalType {
                 pos,
                 child: Box::new(child),
-            }));
-        }
-
-        if self.starts_type_prefix() {
-            return self.parse_prefix_type_op();
-        }
-
-        if self.current_is_prefix_op() {
+            })
+        } else if self.starts_type_prefix() {
+            self.parse_prefix_type_op()?
+        } else if self.current_is_prefix_op() {
             let pos = self.current_pos();
             let op = self.bump_token().expect("current token exists");
-            let expr = self.with_depth(Self::parse_prefix_expr)?;
+            let expr = self.with_depth(|parser| parser.parse_prefix_expr(allow_initializer))?;
             return Ok(ast::Expression::Unary(ast::UnaryOp {
                 pos,
                 op,
                 expr: Box::new(expr),
             }));
-        }
+        } else {
+            self.parse_primary_expr()?
+        };
 
-        self.parse_suffix_expr()
+        self.parse_suffix_tail(expr, allow_initializer)
+    }
+
+    fn parse_type_prefix_operand(&mut self) -> Result<ast::Expression, Error> {
+        self.with_depth(|parser| parser.parse_prefix_expr(false))
     }
 
     /// PrefixTypeOp <- QUESTIONMARK / KEYWORD_anyframe MINUSRARROW / SliceTypeStart ... / PtrTypeStart ... / ArrayTypeStart
@@ -1200,7 +1200,7 @@ impl Parser {
             kind
         };
         let modifiers = self.parse_pointer_modifiers()?;
-        let child = self.with_depth(Self::parse_prefix_expr)?;
+        let child = self.parse_type_prefix_operand()?;
         let tokens = self.tokens_since(mark);
         Ok(ast::Expression::Pointer(ast::PointerType {
             pos,
@@ -1222,7 +1222,7 @@ impl Parser {
         };
         self.expect_symbol(Symbol::RBracket)?;
         let modifiers = self.parse_pointer_modifiers()?;
-        let child = self.with_depth(Self::parse_prefix_expr)?;
+        let child = self.parse_type_prefix_operand()?;
         let tokens = self.tokens_since(mark);
         Ok(ast::Expression::SliceType(ast::SliceType {
             pos,
@@ -1244,7 +1244,7 @@ impl Parser {
             None
         };
         self.expect_symbol(Symbol::RBracket)?;
-        let child = self.with_depth(Self::parse_prefix_expr)?;
+        let child = self.parse_type_prefix_operand()?;
         let tokens = self.tokens_since(mark);
         Ok(ast::Expression::ArrayType(ast::ArrayType {
             pos,
@@ -1293,9 +1293,11 @@ impl Parser {
     }
 
     /// SuffixExpr <- PrimaryTypeExpr (SuffixOp / FnCallArguments)*
-    fn parse_suffix_expr(&mut self) -> Result<ast::Expression, Error> {
-        let mut expr = self.parse_primary_expr()?;
-
+    fn parse_suffix_tail(
+        &mut self,
+        mut expr: ast::Expression,
+        allow_initializer: bool,
+    ) -> Result<ast::Expression, Error> {
         loop {
             if self.current_is_symbol(Symbol::LParen) {
                 let pos = expr.pos();
@@ -1350,7 +1352,10 @@ impl Parser {
                 continue;
             }
 
-            if self.current_is_symbol(Symbol::LBrace) && self.suppress_curly_suffix == 0 {
+            if allow_initializer
+                && self.suppress_curly_suffix == 0
+                && self.current_is_symbol(Symbol::LBrace)
+            {
                 let mark = self.preback();
                 let pos = expr.pos();
                 let entries = self.parse_init_list()?;
@@ -1370,7 +1375,7 @@ impl Parser {
         if self.current_is_symbol(Symbol::ExclamationMark) {
             let pos = self.current_pos();
             self.cursor += 1;
-            let payload = self.with_depth(Self::parse_prefix_expr)?;
+            let payload = self.with_depth(|parser| parser.parse_prefix_expr(allow_initializer))?;
             expr = ast::Expression::ErrorUnion(ast::ErrorUnionType {
                 pos,
                 error: Box::new(expr),
@@ -2792,6 +2797,30 @@ pub fn add(a: u32, comptime b: anytype) u32 {
             panic!("expected sentinel pointer type");
         };
         assert!(matches!(ptr.kind, ast::PointerKind::Sentinel(_)));
+    }
+
+    #[test]
+    fn array_initializers_use_the_complete_array_type() {
+        for (source, slice_child) in [
+            ("[_]u8{ 1, 2, 3 }", false),
+            ("[_][]const u8{ \"a\" }", true),
+        ] {
+            let ast::Expression::InitList(init) = Parser::from(source).expression().unwrap() else {
+                panic!("expected initializer for {source}");
+            };
+            let ast::Expression::ArrayType(array) = init.ty.as_ref() else {
+                panic!("expected array type for {source}");
+            };
+            let child = if slice_child {
+                let ast::Expression::SliceType(slice) = array.child.as_ref() else {
+                    panic!("expected slice element type for {source}");
+                };
+                slice.child.as_ref()
+            } else {
+                array.child.as_ref()
+            };
+            assert!(matches!(child, ast::Expression::Ident(ident) if ident.name == "u8"));
+        }
     }
 
     #[test]
