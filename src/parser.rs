@@ -71,7 +71,8 @@ impl Parser {
         Ok(Self::from_scanner(scanner))
     }
 
-    fn from_scanner(scanner: Scanner) -> Self {
+    /// Creates a parser from the scanner's remaining tokens.
+    pub fn from_scanner(scanner: Scanner) -> Self {
         let path = scanner.path().to_path_buf();
         let line_info = scanner.lines().to_vec();
         let source_len = scanner.source().len();

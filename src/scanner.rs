@@ -6,6 +6,7 @@ use crate::token::{CommentKind, Keyword, LitKind, Symbol, Token};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ScanOptions {
+    /// Rejects tabs and carriage returns between tokens.
     pub strict_whitespace: bool,
 }
 
@@ -42,13 +43,17 @@ impl Scanner {
     }
 
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        Self::from_file_with_options(path, ScanOptions::default())
+    }
+
+    /// Reads a source file and creates a scanner with the supplied options.
+    pub fn from_file_with_options<P: AsRef<Path>>(
+        path: P,
+        options: ScanOptions,
+    ) -> Result<Self, Error> {
         let path = path.as_ref();
         let source = fs::read_to_string(path)?;
-        Ok(Self::new(
-            source,
-            path.to_path_buf(),
-            ScanOptions::default(),
-        ))
+        Ok(Self::new(source, path.to_path_buf(), options))
     }
 
     fn new(source: String, path: PathBuf, options: ScanOptions) -> Self {
