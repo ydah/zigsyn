@@ -1593,8 +1593,15 @@ impl Parser {
                     text,
                 }))
             }
-            Token::Literal(LitKind::MultilineString, text) => {
+            Token::Literal(LitKind::MultilineString, mut text) => {
                 self.advance();
+                while let Some(Token::Literal(LitKind::MultilineString, next)) =
+                    self.current().map(|token| &token.token)
+                {
+                    text.push('\n');
+                    text.push_str(next);
+                    self.advance();
+                }
                 Ok(ast::Expression::MultilineStr(ast::MultilineStr {
                     pos: current.pos,
                     text,
@@ -3255,6 +3262,26 @@ pub fn f() void {
 "#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn multiline_strings_preserve_intervening_line_comments() {
+        let source = r#"const text =
+    \\first
+    // interposed
+    \\second
+;"#;
+        let file = parse_source(source).unwrap();
+        let ast::ContainerMember::Var(decl) = &file.members[0] else {
+            panic!("expected variable declaration");
+        };
+        let Some(ast::Expression::MultilineStr(string)) = &decl.init else {
+            panic!("expected multiline string");
+        };
+        assert_eq!(string.text, "\\\\first\n\\\\second");
+        assert_eq!(file.comments.len(), 1);
+        assert_eq!(file.comments[0].text, "// interposed");
+        assert_eq!(file.comments[0].pos, source.find("// interposed").unwrap());
     }
 
     #[test]
