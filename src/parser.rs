@@ -95,7 +95,7 @@ impl Parser {
         }
     }
 
-    pub fn parse_file(mut self) -> anyhow::Result<ast::File> {
+    pub fn parse_file(mut self) -> Result<ast::File, Error> {
         self.check_scan_error()?;
         self.validate_token_stream()?;
 
@@ -611,19 +611,15 @@ impl Parser {
             modifier,
             Some(ast::FnModifier::Export | ast::FnModifier::Extern(_))
         ) {
-            if matches!(
-                modifier,
-                Some(ast::FnModifier::Inline | ast::FnModifier::NoInline)
-            ) {
-                return Err(self.error_at(self.current_pos(), "inline modifier requires fn"));
-            }
-            return self.parse_global_var_decl(
-                mark,
-                pos,
-                docs,
-                visibility,
-                modifier_to_var(modifier)?,
-            );
+            let var_modifier = match modifier {
+                Some(ast::FnModifier::Export) => Some(ast::VarModifier::Export),
+                Some(ast::FnModifier::Extern(abi)) => Some(ast::VarModifier::Extern(abi)),
+                Some(ast::FnModifier::Inline | ast::FnModifier::NoInline) => {
+                    return Err(self.error_at(self.current_pos(), "inline modifier requires fn"));
+                }
+                None => None,
+            };
+            return self.parse_global_var_decl(mark, pos, docs, visibility, var_modifier);
         }
 
         if modifier.is_some() || visibility.is_some() {
@@ -2656,6 +2652,7 @@ impl Parser {
     fn unexpected(&self, expect: Vec<TokenKind>, actual: Option<Token>) -> Error {
         Error::UnexpectedToken {
             path: self.path.clone(),
+            offset: self.current_pos(),
             location: self.location_for_current(),
             expect,
             actual,
@@ -2663,8 +2660,9 @@ impl Parser {
     }
 
     fn error_at(&self, pos: usize, reason: &str) -> Error {
-        Error::Else {
+        Error::Syntax {
             path: self.path.clone(),
+            offset: pos,
             location: self.line_col(pos),
             reason: reason.to_owned(),
         }
@@ -2720,21 +2718,6 @@ fn starts_var_decl_at(tokens: &[&SpannedToken], idx: usize) -> bool {
                     | Keyword::Comptime
             )
     )
-}
-
-fn modifier_to_var(modifier: Option<ast::FnModifier>) -> Result<Option<ast::VarModifier>, Error> {
-    Ok(match modifier {
-        Some(ast::FnModifier::Export) => Some(ast::VarModifier::Export),
-        Some(ast::FnModifier::Extern(abi)) => Some(ast::VarModifier::Extern(abi)),
-        Some(ast::FnModifier::Inline | ast::FnModifier::NoInline) => {
-            return Err(Error::Else {
-                path: PathBuf::from("<source>"),
-                location: (1, 1),
-                reason: "function-only modifier used on variable".to_owned(),
-            })
-        }
-        None => None,
-    })
 }
 
 #[cfg(test)]
@@ -2988,7 +2971,7 @@ extern "c" var b: c_int;"#;
             assert!(
                 matches!(
                     parser.expression(),
-                    Err(Error::Else { reason, .. }) if reason == "parser recursion depth exceeded"
+                    Err(Error::Syntax { reason, .. }) if reason == "parser recursion depth exceeded"
                 ),
                 "{source}"
             );
@@ -3003,7 +2986,7 @@ extern "c" var b: c_int;"#;
         let mark = parser.preback();
         assert!(matches!(
             parser.parse_statement(),
-            Err(Error::Else { reason, .. }) if reason == "parser recursion depth exceeded"
+            Err(Error::Syntax { reason, .. }) if reason == "parser recursion depth exceeded"
         ));
         assert_eq!(parser.preback(), mark);
     }

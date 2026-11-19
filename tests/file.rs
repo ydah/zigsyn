@@ -46,3 +46,20 @@ fn parser_respects_scanner_whitespace_options() {
             .contains("invalid whitespace outside PEG skip rule"));
     }
 }
+
+#[test]
+fn parse_errors_report_byte_offsets() {
+    let lexical_input = "const x = \"é\" #;";
+    let error: zigsyn::Error = zigsyn::parse_source(lexical_input).unwrap_err();
+    assert!(matches!(
+        error,
+        zigsyn::Error::Syntax { offset, .. } if offset == lexical_input.find('#').unwrap()
+    ));
+
+    let syntax_input = "const x = \"é\"; var a u8;";
+    let error = zigsyn::parse_source(syntax_input).unwrap_err();
+    assert!(matches!(
+        error,
+        zigsyn::Error::UnexpectedToken { offset, .. } if offset == syntax_input.find("u8").unwrap()
+    ));
+}
