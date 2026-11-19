@@ -101,7 +101,7 @@ impl Parser {
 
     pub fn parse_file(mut self) -> Result<ast::File, Error> {
         self.check_scan_error()?;
-        self.validate_token_stream()?;
+        self.validate_balanced_delimiters()?;
 
         let container_docs = self.collect_doc_comments(CommentKind::ContainerDoc);
         let members = self.parse_container_members_until(None)?;
@@ -2326,12 +2326,6 @@ impl Parser {
         }))
     }
 
-    fn validate_token_stream(&self) -> Result<(), Error> {
-        self.validate_balanced_delimiters()?;
-        self.validate_rejection_cases()?;
-        Ok(())
-    }
-
     fn validate_balanced_delimiters(&self) -> Result<(), Error> {
         let mut stack: Vec<(Symbol, usize)> = Vec::new();
         for token in &self.tokens {
@@ -2355,91 +2349,6 @@ impl Parser {
         if let Some((_, pos)) = stack.pop() {
             return Err(self.error_at(pos, "unclosed delimiter"));
         }
-        Ok(())
-    }
-
-    fn validate_rejection_cases(&self) -> Result<(), Error> {
-        let significant: Vec<&SpannedToken> = self
-            .tokens
-            .iter()
-            .filter(|token| !matches!(token.token, Token::Comment(_, _)))
-            .collect();
-
-        for window in significant.windows(2) {
-            if matches!(window[0].token, Token::Symbol(Symbol::Dot))
-                && matches!(
-                    window[1].token,
-                    Token::Literal(LitKind::Integer | LitKind::Float, _)
-                )
-            {
-                return Err(self.error_at(window[0].pos, "dot cannot start a numeric literal"));
-            }
-            if matches!(window[0].token, Token::Keyword(Keyword::If))
-                && !matches!(window[1].token, Token::Symbol(Symbol::LParen))
-            {
-                return Err(self.error_at(window[0].pos, "if condition must be parenthesized"));
-            }
-        }
-
-        for window in significant.windows(3) {
-            if token_is_comparison(&window[0].token)
-                && !is_delimiter(&window[1].token)
-                && token_is_comparison(&window[2].token)
-            {
-                return Err(
-                    self.error_at(window[2].pos, "comparison operators are not associative")
-                );
-            }
-        }
-
-        for idx in 0..significant.len() {
-            if matches!(
-                significant[idx].token,
-                Token::Keyword(Keyword::Const | Keyword::Var)
-            ) {
-                if !starts_var_decl_at(&significant, idx) {
-                    continue;
-                }
-                let mut saw_comma = false;
-                let mut saw_equal = false;
-                let mut depth = 0usize;
-                let mut j = idx + 1;
-                while j < significant.len() {
-                    match significant[j].token {
-                        Token::Symbol(Symbol::LParen | Symbol::LBracket | Symbol::LBrace) => {
-                            depth += 1;
-                        }
-                        Token::Symbol(Symbol::RParen | Symbol::RBracket | Symbol::RBrace) => {
-                            depth = depth.saturating_sub(1);
-                        }
-                        Token::Symbol(Symbol::Comma) if depth == 0 => saw_comma = true,
-                        Token::Symbol(Symbol::Equal) if depth == 0 => {
-                            saw_equal = true;
-                            break;
-                        }
-                        Token::Symbol(Symbol::Semicolon) if depth == 0 => break,
-                        _ => {}
-                    }
-                    j += 1;
-                }
-                if saw_comma && !saw_equal {
-                    return Err(self.error_at(
-                        significant[idx].pos,
-                        "destructuring variable declarations require an initializer",
-                    ));
-                }
-            }
-
-            if idx + 3 < significant.len()
-                && matches!(significant[idx].token, Token::Symbol(Symbol::LBracket))
-                && matches!(significant[idx + 1].token, Token::Symbol(Symbol::Asterisk))
-                && matches!(significant[idx + 2].token, Token::Literal(LitKind::Ident, ref name) if name != "c")
-                && matches!(significant[idx + 3].token, Token::Symbol(Symbol::RBracket))
-            {
-                return Err(self.error_at(significant[idx + 2].pos, "[*x] pointer type is invalid"));
-            }
-        }
-
         Ok(())
     }
 
@@ -2701,40 +2610,6 @@ fn token_is_comparison(token: &Token) -> bool {
     matches!(token, Token::Symbol(symbol) if symbol.is_comparison())
 }
 
-fn is_delimiter(token: &Token) -> bool {
-    matches!(
-        token,
-        Token::Symbol(
-            Symbol::LParen
-                | Symbol::RParen
-                | Symbol::LBracket
-                | Symbol::RBracket
-                | Symbol::LBrace
-                | Symbol::RBrace
-                | Symbol::Comma
-                | Symbol::Semicolon
-        )
-    )
-}
-
-fn starts_var_decl_at(tokens: &[&SpannedToken], idx: usize) -> bool {
-    if idx == 0 {
-        return true;
-    }
-
-    matches!(
-        tokens[idx - 1].token,
-        Token::Symbol(Symbol::LBrace | Symbol::Semicolon)
-            | Token::Keyword(
-                Keyword::Pub
-                    | Keyword::Export
-                    | Keyword::Extern
-                    | Keyword::Threadlocal
-                    | Keyword::Comptime
-            )
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use crate::parse_source;
@@ -2969,6 +2844,23 @@ extern "c" var b: c_int;"#;
                 "{source:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn file_and_expression_parsers_report_the_same_missing_if_delimiter() {
+        let Error::UnexpectedToken { expect: file, .. } =
+            parse_source("const x = if ready {};").unwrap_err()
+        else {
+            panic!("expected a missing delimiter diagnostic in the file");
+        };
+        let Error::UnexpectedToken {
+            expect: expression, ..
+        } = Parser::from("if ready {}").expression().unwrap_err()
+        else {
+            panic!("expected a missing delimiter diagnostic in the expression");
+        };
+        assert_eq!(file, [TokenKind::Symbol(Symbol::LParen)]);
+        assert_eq!(file, expression);
     }
 
     #[test]
